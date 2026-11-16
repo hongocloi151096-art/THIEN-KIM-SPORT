@@ -12,7 +12,15 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { Product, Supplier, PRODUCT_CATEGORIES, CATEGORY_MARKUP, TIERED_CATEGORIES } from '@/lib/types';
+import {
+  Product,
+  Supplier,
+  PRODUCT_CATEGORIES,
+  CATEGORY_MARKUP,
+  TIERED_CATEGORIES,
+  SUB_CATEGORIES,
+  ALL_SUB_CATEGORIES,
+} from '@/lib/types';
 import { formatVND } from '@/lib/pricing';
 import {
   PageHeader,
@@ -25,22 +33,49 @@ import {
   StatCard,
 } from '@/components/ui';
 
+const CSV_DELIMITER = ';';
+
+function parseCSVLine(line: string, delimiter: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === delimiter && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current);
+  return result;
+}
+
 export default function Inventory() {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [subCategoryFilter, setSubCategoryFilter] = useState('');
   const [showLowStock, setShowLowStock] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [importMsg, setImportMsg] = useState('');
 
-  // New product form
   const [newProduct, setNewProduct] = useState<{
     sku: string;
     name: string;
     category: string;
+    sub_category: string;
     variant: string;
     price_hlv: string;
     price_le: string;
@@ -50,6 +85,7 @@ export default function Inventory() {
     sku: '',
     name: '',
     category: PRODUCT_CATEGORIES[0],
+    sub_category: '',
     variant: '',
     price_hlv: '',
     price_le: '',
@@ -59,8 +95,7 @@ export default function Inventory() {
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
-    let query = supabase.from('products').select('*').order('name');
-    const { data, error } = await query;
+    const { data, error } = await supabase.from('products').select('*').order('name');
     if (error) {
       console.error('Error:', error);
     } else {
@@ -78,13 +113,15 @@ export default function Inventory() {
 
   const filteredProducts = products.filter((p) => {
     if (categoryFilter && p.category !== categoryFilter) return false;
+    if (subCategoryFilter && (p.sub_category || '') !== subCategoryFilter) return false;
     if (showLowStock && p.stock >= 5) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
       p.sku.toLowerCase().includes(q) ||
       p.name.toLowerCase().includes(q) ||
-      (p.variant || '').toLowerCase().includes(q)
+      (p.variant || '').toLowerCase().includes(q) ||
+      (p.sub_category || '').toLowerCase().includes(q)
     );
   });
 
@@ -92,18 +129,21 @@ export default function Inventory() {
   const totalStockValue = products.reduce((s, p) => s + p.price_hlv * p.stock, 0);
   const totalProducts = products.length;
 
+  const computeLePrice = (category: string, hlv: number) => {
+    const isTiered = TIERED_CATEGORIES.includes(category);
+    return isTiered ? hlv : hlv + (CATEGORY_MARKUP[category] || 0);
+  };
+
   const handleSaveProduct = async () => {
     if (!editingProduct) return;
-    const isTiered = TIERED_CATEGORIES.includes(editingProduct.category);
-    const calculatedPriceLe = isTiered
-      ? editingProduct.price_hlv
-      : editingProduct.price_hlv + (CATEGORY_MARKUP[editingProduct.category] || 0);
+    const calculatedPriceLe = computeLePrice(editingProduct.category, editingProduct.price_hlv);
 
     const { error } = await supabase
       .from('products')
       .update({
         name: editingProduct.name,
         category: editingProduct.category,
+        sub_category: editingProduct.sub_category || null,
         variant: editingProduct.variant,
         price_hlv: editingProduct.price_hlv,
         price_le: calculatedPriceLe,
@@ -119,7 +159,7 @@ export default function Inventory() {
     setProducts((prev) =>
       prev.map((p) =>
         p.id === editingProduct.id
-          ? { ...p, ...editingProduct, price_le: calculatedPriceLe }
+          ? { ...p, ...editingProduct, sub_category: editingProduct.sub_category || null, price_le: calculatedPriceLe }
           : p
       )
     );
@@ -132,10 +172,7 @@ export default function Inventory() {
       return;
     }
     const hlvPrice = parseInt(newProduct.price_hlv) || 0;
-    const isTiered = TIERED_CATEGORIES.includes(newProduct.category);
-    const lePrice = isTiered
-      ? hlvPrice
-      : hlvPrice + (CATEGORY_MARKUP[newProduct.category] || 0);
+    const lePrice = computeLePrice(newProduct.category, hlvPrice);
 
     const { data, error } = await supabase
       .from('products')
@@ -143,6 +180,7 @@ export default function Inventory() {
         sku: newProduct.sku,
         name: newProduct.name,
         category: newProduct.category,
+        sub_category: newProduct.sub_category || null,
         variant: newProduct.variant || null,
         price_hlv: hlvPrice,
         price_le: lePrice,
@@ -158,7 +196,7 @@ export default function Inventory() {
     }
     setProducts((prev) => [...prev, data]);
     setNewProduct({
-      sku: '', name: '', category: PRODUCT_CATEGORIES[0], variant: '',
+      sku: '', name: '', category: PRODUCT_CATEGORIES[0], sub_category: '', variant: '',
       price_hlv: '', price_le: '', stock: '', default_supplier_id: '',
     });
     setShowAddForm(false);
@@ -175,18 +213,19 @@ export default function Inventory() {
   };
 
   const handleExport = () => {
-    const headers = ['SKU', 'Tên sản phẩm', 'Nhóm hàng', 'Phân loại', 'Giá HLV', 'Giá Lẻ', 'Tồn kho'];
+    const headers = ['SKU', 'Tên sản phẩm', 'Nhóm hàng', 'Môn võ / Nhóm con', 'Phân loại', 'Giá HLV', 'Giá Lẻ', 'Tồn kho'];
     const rows = products.map((p) => [
       p.sku,
       p.name,
       p.category,
+      p.sub_category || '',
       p.variant || '',
       p.price_hlv,
       p.price_le,
       p.stock,
     ]);
     const csv = [headers, ...rows]
-      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(CSV_DELIMITER))
       .join('\n');
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -202,42 +241,20 @@ export default function Inventory() {
     if (!file) return;
 
     const text = await file.text();
-    const lines = text.split('\n').filter((l) => l.trim());
+    const delimiter = text.includes(';') ? ';' : ',';
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
     if (lines.length < 2) {
       setImportMsg('File CSV không có dữ liệu');
+      e.target.value = '';
       return;
     }
 
-    const parseRow = (line: string) => {
-      const result: string[] = [];
-      let current = '';
-      let inQuotes = false;
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        if (char === '"') {
-          if (inQuotes && line[i + 1] === '"') {
-            current += '"';
-            i++;
-          } else {
-            inQuotes = !inQuotes;
-          }
-        } else if (char === ',' && !inQuotes) {
-          result.push(current);
-          current = '';
-        } else {
-          current += char;
-        }
-      }
-      result.push(current);
-      return result;
-    };
-
-    const headers = parseRow(lines[0]).map((h) => h.replace(/^"|"$/g, '').trim());
+    const headers = parseCSVLine(lines[0], delimiter).map((h) => h.replace(/^"|"$/g, '').trim());
     let success = 0;
     let fail = 0;
 
     for (let i = 1; i < lines.length; i++) {
-      const values = parseRow(lines[i]);
+      const values = parseCSVLine(lines[i], delimiter);
       const row: Record<string, string> = {};
       headers.forEach((h, idx) => {
         row[h] = (values[idx] || '').replace(/^"|"$/g, '').trim();
@@ -251,16 +268,15 @@ export default function Inventory() {
       }
 
       const category = row['Nhóm hàng'] || row['category'] || PRODUCT_CATEGORIES[0];
+      const subCategory = row['Môn võ / Nhóm con'] || row['sub_category'] || row['Môn võ'] || '';
       const hlvPrice = parseInt(row['Giá HLV'] || row['price_hlv'] || '0') || 0;
-      const isTiered = TIERED_CATEGORIES.includes(category);
-      const lePrice = isTiered
-        ? hlvPrice
-        : hlvPrice + (CATEGORY_MARKUP[category] || 0);
+      const lePrice = computeLePrice(category, hlvPrice);
 
       const { error } = await supabase.from('products').upsert({
         sku,
         name,
         category,
+        sub_category: subCategory || null,
         variant: row['Phân loại'] || row['variant'] || null,
         price_hlv: hlvPrice,
         price_le: lePrice,
@@ -292,19 +308,14 @@ export default function Inventory() {
     <div>
       <PageHeader
         title="Quản lý Kho & Nhập bảng giá"
-        subtitle="Tồn kho, cảnh báo hết hàng và import/export CSV"
+        subtitle="Tồn kho, cảnh báo hết hàng, phân nhóm 2 tầng và import/export CSV (dấu ;)"
       />
 
-      {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard label="Tổng sản phẩm" value={String(totalProducts)} variant="primary" />
         <StatCard label="Sắp hết (< 5)" value={String(lowStockCount)} variant={lowStockCount > 0 ? 'danger' : 'default'} />
         <StatCard label="Tổng giá trị kho" value={formatVND(totalStockValue)} />
-        <StatCard
-          label="Nhóm hàng"
-          value={String(PRODUCT_CATEGORIES.length)}
-          variant="default"
-        />
+        <StatCard label="Nhóm hàng" value={String(PRODUCT_CATEGORIES.length)} variant="default" />
       </div>
 
       {importMsg && (
@@ -313,7 +324,6 @@ export default function Inventory() {
         </div>
       )}
 
-      {/* Toolbar */}
       <Card className="p-4 mb-6">
         <div className="flex flex-col lg:flex-row gap-3">
           <div className="relative flex-1">
@@ -322,16 +332,24 @@ export default function Inventory() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Tìm theo SKU, tên, phân loại..."
+              placeholder="Tìm theo SKU, tên, phân loại, môn võ..."
               className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
-          <Select value={categoryFilter} onChange={setCategoryFilter} className="lg:w-48">
+          <Select value={categoryFilter} onChange={(v) => { setCategoryFilter(v); setSubCategoryFilter(''); }} className="lg:w-48">
             <option value="">Tất cả nhóm</option>
             {PRODUCT_CATEGORIES.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
           </Select>
+          {categoryFilter && (
+            <Select value={subCategoryFilter} onChange={setSubCategoryFilter} className="lg:w-48">
+              <option value="">Tất cả môn/nhóm con</option>
+              {(SUB_CATEGORIES[categoryFilter] || []).map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </Select>
+          )}
           <Button
             variant={showLowStock ? 'danger' : 'outline'}
             onClick={() => setShowLowStock(!showLowStock)}
@@ -347,16 +365,18 @@ export default function Inventory() {
               <span className="inline-flex items-center px-4 py-2.5 text-sm font-medium rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 bg-white transition-all">
                 <Upload size={16} className="inline mr-1.5" /> Import CSV
               </span>
-              <input type="file" accept=".csv" onChange={handleImport} className="hidden" />
+              <input type="file" accept=".csv,text/csv" onChange={handleImport} className="hidden" />
             </label>
             <Button variant="primary" onClick={() => setShowAddForm(!showAddForm)}>
               <Plus size={16} className="inline mr-1.5" /> Thêm SP
             </Button>
           </div>
         </div>
+        <p className="text-xs text-slate-400 mt-2">
+          File CSV dùng dấu chấm phẩy (;) làm phân cách cột (chuẩn Excel tiếng Việt). Cột: SKU; Tên sản phẩm; Nhóm hàng; Môn võ / Nhóm con; Phân loại; Giá HLV; Giá Lẻ; Tồn kho.
+        </p>
       </Card>
 
-      {/* Add product form */}
       {showAddForm && (
         <Card className="p-5 mb-6 border-blue-300">
           <h3 className="font-semibold text-slate-800 mb-4">Thêm sản phẩm mới</h3>
@@ -366,10 +386,20 @@ export default function Inventory() {
             <Select
               label="Nhóm hàng"
               value={newProduct.category}
-              onChange={(v) => setNewProduct({ ...newProduct, category: v })}
+              onChange={(v) => setNewProduct({ ...newProduct, category: v, sub_category: '' })}
             >
               {PRODUCT_CATEGORIES.map((c) => (
                 <option key={c} value={c}>{c}</option>
+              ))}
+            </Select>
+            <Select
+              label="Môn võ / Nhóm con"
+              value={newProduct.sub_category}
+              onChange={(v) => setNewProduct({ ...newProduct, sub_category: v })}
+            >
+              <option value="">-- Không --</option>
+              {(SUB_CATEGORIES[newProduct.category] || ALL_SUB_CATEGORIES).map((s) => (
+                <option key={s} value={s}>{s}</option>
               ))}
             </Select>
             <Input label="Phân loại/Size/Màu" value={newProduct.variant} onChange={(v) => setNewProduct({ ...newProduct, variant: v })} placeholder="VD: Size 160" />
@@ -396,19 +426,19 @@ export default function Inventory() {
         </Card>
       )}
 
-      {/* Products table */}
       {filteredProducts.length === 0 ? (
         <Card className="p-6">
           <EmptyState message="Không có sản phẩm nào" icon={<Warehouse size={40} />} />
         </Card>
       ) : (
         <Card className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[700px]">
+          <table className="w-full text-sm min-w-[800px]">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="text-left px-4 py-3 font-semibold text-slate-600">SKU</th>
                 <th className="text-left px-4 py-3 font-semibold text-slate-600">Sản phẩm</th>
                 <th className="text-left px-4 py-3 font-semibold text-slate-600">Nhóm</th>
+                <th className="text-left px-4 py-3 font-semibold text-slate-600">Môn võ / Nhóm con</th>
                 <th className="text-right px-4 py-3 font-semibold text-slate-600">Giá HLV</th>
                 <th className="text-right px-4 py-3 font-semibold text-slate-600">Giá Lẻ</th>
                 <th className="text-center px-4 py-3 font-semibold text-slate-600">Tồn kho</th>
@@ -437,11 +467,23 @@ export default function Inventory() {
                       <td className="px-4 py-2">
                         <select
                           value={editingProduct.category}
-                          onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value })}
+                          onChange={(e) => setEditingProduct({ ...editingProduct, category: e.target.value, sub_category: '' })}
                           className="w-full px-2 py-1 border border-slate-300 rounded text-sm bg-white"
                         >
                           {PRODUCT_CATEGORIES.map((c) => (
                             <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-4 py-2">
+                        <select
+                          value={editingProduct.sub_category || ''}
+                          onChange={(e) => setEditingProduct({ ...editingProduct, sub_category: e.target.value })}
+                          className="w-full px-2 py-1 border border-slate-300 rounded text-sm bg-white"
+                        >
+                          <option value="">-- Không --</option>
+                          {(SUB_CATEGORIES[editingProduct.category] || ALL_SUB_CATEGORIES).map((s) => (
+                            <option key={s} value={s}>{s}</option>
                           ))}
                         </select>
                       </td>
@@ -453,9 +495,7 @@ export default function Inventory() {
                           className="w-24 px-2 py-1 border border-slate-300 rounded text-sm text-right"
                         />
                       </td>
-                      <td className="px-4 py-2 text-right text-slate-500 text-xs">
-                        Tự động tính
-                      </td>
+                      <td className="px-4 py-2 text-right text-slate-500 text-xs">Tự động tính</td>
                       <td className="px-4 py-2">
                         <input
                           type="number"
@@ -483,6 +523,13 @@ export default function Inventory() {
                         {product.variant && <p className="text-xs text-slate-400">{product.variant}</p>}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-600">{product.category}</td>
+                      <td className="px-4 py-3">
+                        {product.sub_category ? (
+                          <Badge variant="info">{product.sub_category}</Badge>
+                        ) : (
+                          <span className="text-xs text-slate-300">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-right text-slate-700">{formatVND(product.price_hlv)}</td>
                       <td className="px-4 py-3 text-right text-red-600 font-medium">{formatVND(product.price_le)}</td>
                       <td className="px-4 py-3 text-center">

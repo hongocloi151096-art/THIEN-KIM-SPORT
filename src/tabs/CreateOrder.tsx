@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Search,
   Plus,
@@ -11,6 +11,11 @@ import {
   Check,
   AlertCircle,
   Package,
+  Shirt,
+  Swords,
+  Glove,
+  Users as UsersIcon,
+  Send,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import {
@@ -18,6 +23,8 @@ import {
   Customer,
   Supplier,
   Settings,
+  SalesStaff,
+  SUB_CATEGORIES,
 } from '@/lib/types';
 import {
   PriceType,
@@ -32,10 +39,7 @@ import {
   PageHeader,
   Card,
   Button,
-  Badge,
   Input,
-  Select,
-  StatCard,
 } from '@/components/ui';
 
 interface CartItem {
@@ -45,10 +49,27 @@ interface CartItem {
   supplierId: string | null;
 }
 
+interface CategoryCard {
+  key: string;
+  label: string;
+  icon: typeof Shirt;
+  accent: string;
+}
+
+const CATEGORY_CARDS: CategoryCard[] = [
+  { key: 'Võ phục & Phụ kiện', label: 'Võ phục & Phụ kiện', icon: Shirt, accent: 'from-blue-500 to-blue-700' },
+  { key: 'Dụng cụ võ thuật', label: 'Dụng cụ võ thuật', icon: Glove, accent: 'from-amber-500 to-amber-700' },
+  { key: 'Binh khí Vovinam', label: 'Binh khí Vovinam', icon: Swords, accent: 'from-red-500 to-red-700' },
+  { key: 'Áo thun & Đồng phục', label: 'Áo thun & Đồng phục', icon: UsersIcon, accent: 'from-emerald-500 to-emerald-700' },
+];
+
+const STAFF_LS_KEY = 'tk_selected_staff_id';
+
 export default function CreateOrder() {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [staffList, setStaffList] = useState<SalesStaff[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [phone, setPhone] = useState('');
@@ -62,17 +83,27 @@ export default function CreateOrder() {
   const [submitting, setSubmitting] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [selectedStaffId, setSelectedStaffId] = useState<string>('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [selectedSub, setSelectedSub] = useState<string>('');
+
+  const customerAddressRef = useRef(customerAddress);
+  customerAddressRef.current = customerAddress;
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [prodRes, supRes, setRes] = await Promise.all([
+    const [prodRes, supRes, setRes, staffRes] = await Promise.all([
       supabase.from('products').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('settings').select('*').maybeSingle(),
+      supabase.from('sales_staff').select('*').order('name'),
     ]);
     if (prodRes.data) setProducts(prodRes.data);
     if (supRes.data) setSuppliers(supRes.data);
     if (setRes.data) setSettings(setRes.data);
+    if (staffRes.data) setStaffList(staffRes.data);
+    const savedStaff = localStorage.getItem(STAFF_LS_KEY);
+    if (savedStaff) setSelectedStaffId(savedStaff);
     setLoading(false);
   }, []);
 
@@ -80,7 +111,10 @@ export default function CreateOrder() {
     fetchData();
   }, [fetchData]);
 
-  // Search customer by phone
+  useEffect(() => {
+    if (selectedStaffId) localStorage.setItem(STAFF_LS_KEY, selectedStaffId);
+  }, [selectedStaffId]);
+
   useEffect(() => {
     if (phone.length < 8) {
       setExistingCustomer(null);
@@ -103,7 +137,6 @@ export default function CreateOrder() {
     return () => clearTimeout(timer);
   }, [phone]);
 
-  // Recalculate cart prices when price type changes
   useEffect(() => {
     setCart((prev) =>
       prev.map((item) => {
@@ -114,6 +147,8 @@ export default function CreateOrder() {
   }, [priceType]);
 
   const filteredProducts = products.filter((p) => {
+    if (selectedCategory && p.category !== selectedCategory) return false;
+    if (selectedSub && (p.sub_category || '') !== selectedSub) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -170,6 +205,51 @@ export default function CreateOrder() {
     setCart((prev) => prev.filter((c) => c.product.id !== productId));
   };
 
+  const handleCategoryClick = (cat: string) => {
+    if (selectedCategory === cat) {
+      setSelectedCategory('');
+      setSelectedSub('');
+    } else {
+      setSelectedCategory(cat);
+      setSelectedSub('');
+    }
+  };
+
+  const buildOrderMessage = (
+    orderCode: string,
+    custName: string,
+    custPhone: string,
+    items: CartItem[],
+    total: number,
+    bankAccount: string,
+    bankHolder: string,
+    qrUrl: string
+  ): string => {
+    const lines: string[] = [];
+    lines.push(`=== THIEN KIM SPORTS ===`);
+    lines.push(`Don hang: ${orderCode}`);
+    lines.push(`Khach hang: ${custName}`);
+    lines.push(`SDT: ${custPhone}`);
+    if (customerAddressRef.current.trim()) {
+      lines.push(`Dia chi: ${customerAddressRef.current.trim()}`);
+    }
+    lines.push(`---------------------------`);
+    items.forEach((it, i) => {
+      lines.push(`${i + 1}. ${it.product.name} ${it.product.variant || ''} (${it.product.sku})`);
+      lines.push(`   SL: ${it.quantity} | Don gia: ${formatVND(it.unitPrice)} | T.tien: ${formatVND(it.unitPrice * it.quantity)}`);
+    });
+    lines.push(`---------------------------`);
+    lines.push(`TONG: ${formatVND(total)}`);
+    lines.push(``);
+    lines.push(`Chuyen khoan MB Bank:`);
+    lines.push(`STK: ${bankAccount}`);
+    lines.push(`Chu TK: ${bankHolder}`);
+    lines.push(`Noi dung: ${orderCode}`);
+    if (qrUrl) lines.push(`QR VietQR: ${qrUrl}`);
+    lines.push(`Cam on quy khach!`);
+    return lines.join('\n');
+  };
+
   const handleSubmit = async () => {
     setErrorMsg('');
     setSuccessMsg('');
@@ -205,6 +285,7 @@ export default function CreateOrder() {
 
       const orderCode = generateOrderCode();
       const firstSupplierId = cart[0]?.supplierId || null;
+      const staffId = selectedStaffId || null;
 
       const { data: order, error: orderErr } = await supabase
         .from('orders')
@@ -219,6 +300,7 @@ export default function CreateOrder() {
           payment_status: 'pending',
           shipping_status: 'pending',
           supplier_id: firstSupplierId,
+          sales_staff_id: staffId,
           note: orderNote.trim() || null,
         })
         .select()
@@ -235,12 +317,12 @@ export default function CreateOrder() {
         quantity: item.quantity,
         unit_price: item.unitPrice,
         subtotal: item.unitPrice * item.quantity,
+        supplier_id: item.supplierId || null,
       }));
 
       const { error: itemsErr } = await supabase.from('order_items').insert(orderItems);
       if (itemsErr) throw itemsErr;
 
-      // Deduct stock
       for (const item of cart) {
         await supabase
           .from('products')
@@ -248,7 +330,6 @@ export default function CreateOrder() {
           .eq('id', item.product.id);
       }
 
-      // Update local product stock
       setProducts((prev) =>
         prev.map((p) => {
           const cartItem = cart.find((c) => c.product.id === p.id);
@@ -257,7 +338,35 @@ export default function CreateOrder() {
         })
       );
 
-      setSuccessMsg(`Đã tạo đơn hàng ${orderCode} thành công! Kho đã được trừ tự động.`);
+      const staff = staffList.find((s) => s.id === staffId) || null;
+      const senderKey = staff?.zalo_session_key || null;
+      const bankAccount = settings?.mb_bank_account || '';
+      const bankHolder = settings?.mb_bank_holder || '';
+      const qrUrl = bankAccount
+        ? generateVietQRUrl(bankAccount, totalAmount, `THIENKIM ${orderCode.slice(0, 12)}`)
+        : '';
+      const content = buildOrderMessage(
+        orderCode,
+        customerName.trim() || 'Khách lẻ',
+        phone.trim(),
+        cart,
+        totalAmount,
+        bankAccount,
+        bankHolder,
+        qrUrl
+      );
+
+      await supabase.from('message_outbox').insert({
+        channel: 'zalo',
+        sender_session_key: senderKey,
+        recipient: phone.trim(),
+        recipient_type: 'phone',
+        content,
+        status: 'pending',
+        related_order_id: order.id,
+      });
+
+      setSuccessMsg(`Đã tạo đơn ${orderCode} thành công! Đã trừ kho và thêm tin nhắn Zalo vào hàng đợi.`);
       setCart([]);
       setPhone('');
       setCustomerName('');
@@ -265,7 +374,7 @@ export default function CreateOrder() {
       setOrderNote('');
       setExistingCustomer(null);
 
-      setTimeout(() => setSuccessMsg(''), 5000);
+      setTimeout(() => setSuccessMsg(''), 6000);
     } catch (err) {
       setErrorMsg(`Lỗi tạo đơn: ${(err as Error).message}`);
     } finally {
@@ -297,20 +406,19 @@ export default function CreateOrder() {
       />
 
       {successMsg && (
-        <div className="mb-4 bg-green-50 border border-green-200 rounded-lg p-4 flex items-start gap-3">
+        <div className="mb-4 bg-green-50 border border-green-200 rounded-xl p-4 flex items-start gap-3">
           <Check className="text-green-600 mt-0.5" size={20} />
           <p className="text-sm text-green-700">{successMsg}</p>
         </div>
       )}
       {errorMsg && (
-        <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
+        <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
           <AlertCircle className="text-red-600 mt-0.5" size={20} />
           <p className="text-sm text-red-700">{errorMsg}</p>
         </div>
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Left: Customer info + Product search */}
         <div className="xl:col-span-2 space-y-6">
           {/* Customer info */}
           <Card className="p-5">
@@ -355,40 +463,128 @@ export default function CreateOrder() {
               </div>
             </div>
 
-            {/* Price type toggle */}
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-slate-600 mb-2">Bảng giá áp dụng</label>
-              <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
-                <button
-                  onClick={() => setPriceType('hlv')}
-                  className={`px-5 py-2.5 text-sm font-medium transition-all ${
-                    priceType === 'hlv'
-                      ? 'bg-blue-700 text-white'
-                      : 'bg-white text-slate-600 hover:bg-slate-50'
-                  }`}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-600 mb-1.5">
+                  Nhân viên tạo đơn
+                </label>
+                <select
+                  value={selectedStaffId}
+                  onChange={(e) => setSelectedStaffId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  Bảng giá HLV/Đại lý
-                </button>
-                <button
-                  onClick={() => setPriceType('le')}
-                  className={`px-5 py-2.5 text-sm font-medium transition-all border-l border-slate-300 ${
-                    priceType === 'le'
-                      ? 'bg-red-600 text-white'
-                      : 'bg-white text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  Bảng giá Lẻ
-                </button>
+                  <option value="">-- Chọn nhân viên --</option>
+                  {staffList.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.phone})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-400 mt-1">Lựa chọn được tự nhớ trên trình duyệt.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-600 mb-2">Bảng giá áp dụng</label>
+                <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
+                  <button
+                    onClick={() => setPriceType('hlv')}
+                    className={`px-4 py-2.5 text-sm font-medium transition-all ${
+                      priceType === 'hlv'
+                        ? 'bg-blue-700 text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    Giá HLV/Đại lý
+                  </button>
+                  <button
+                    onClick={() => setPriceType('le')}
+                    className={`px-4 py-2.5 text-sm font-medium transition-all border-l border-slate-300 ${
+                      priceType === 'le'
+                        ? 'bg-red-600 text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    Giá Lẻ
+                  </button>
+                </div>
               </div>
             </div>
           </Card>
 
-          {/* Product search */}
+          {/* Two-tier product selection */}
           <Card className="p-5">
             <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
               <Package size={18} className="text-blue-700" />
-              Tìm sản phẩm
+              Chọn sản phẩm theo nhóm
             </h3>
+
+            {/* Tier 1 - Category cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+              {CATEGORY_CARDS.map((cat) => {
+                const Icon = cat.icon;
+                const active = selectedCategory === cat.key;
+                return (
+                  <button
+                    key={cat.key}
+                    onClick={() => handleCategoryClick(cat.key)}
+                    className={`relative rounded-xl p-4 text-left transition-all border-2 ${
+                      active
+                        ? 'border-blue-700 shadow-md scale-[1.02]'
+                        : 'border-slate-200 hover:border-blue-300 hover:shadow-sm'
+                    }`}
+                  >
+                    <div className={`inline-flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br ${cat.accent} text-white mb-2`}>
+                      <Icon size={18} />
+                    </div>
+                    <p className="text-sm font-semibold text-slate-800 leading-tight">{cat.label}</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      {products.filter((p) => p.category === cat.key).length} sản phẩm
+                    </p>
+                    {active && (
+                      <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-700 text-white flex items-center justify-center">
+                        <Check size={12} />
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Tier 2 - sub_category filter */}
+            {selectedCategory && (
+              <div className="mb-4 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                <p className="text-xs font-medium text-slate-500 uppercase mb-2">
+                  {SUB_CATEGORIES[selectedCategory].length > 4 ? 'Chọn môn võ / nhóm con' : 'Chọn nhóm con'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setSelectedSub('')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      !selectedSub
+                        ? 'bg-blue-700 text-white'
+                        : 'bg-white text-slate-600 border border-slate-300 hover:bg-slate-100'
+                    }`}
+                  >
+                    Tất cả
+                  </button>
+                  {SUB_CATEGORIES[selectedCategory].map((sub) => (
+                    <button
+                      key={sub}
+                      onClick={() => setSelectedSub(sub)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                        selectedSub === sub
+                          ? 'bg-red-600 text-white'
+                          : 'bg-white text-slate-600 border border-slate-300 hover:bg-slate-100'
+                      }`}
+                    >
+                      {sub}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Search */}
             <div className="relative mb-4">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
@@ -399,6 +595,7 @@ export default function CreateOrder() {
                 className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
+
             <div className="max-h-72 overflow-y-auto space-y-2">
               {filteredProducts.map((product) => (
                 <div
@@ -410,6 +607,11 @@ export default function CreateOrder() {
                       <span className="text-xs font-mono font-medium text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded">
                         {product.sku}
                       </span>
+                      {product.sub_category && (
+                        <span className="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                          {product.sub_category}
+                        </span>
+                      )}
                       {product.variant && (
                         <span className="text-xs text-slate-500">{product.variant}</span>
                       )}
@@ -439,7 +641,9 @@ export default function CreateOrder() {
                 </div>
               ))}
               {filteredProducts.length === 0 && (
-                <p className="text-center text-sm text-slate-400 py-6">Không tìm thấy sản phẩm</p>
+                <p className="text-center text-sm text-slate-400 py-6">
+                  {selectedCategory ? 'Không có sản phẩm trong nhóm này' : 'Không tìm thấy sản phẩm'}
+                </p>
               )}
             </div>
           </Card>
@@ -532,7 +736,6 @@ export default function CreateOrder() {
                   className="mt-4"
                 />
 
-                {/* VietQR */}
                 {qrUrl && totalAmount > 0 && (
                   <div className="mt-4 border border-slate-200 rounded-lg p-3 text-center bg-slate-50">
                     <p className="text-xs font-medium text-slate-600 mb-2 flex items-center justify-center gap-1">
@@ -552,8 +755,17 @@ export default function CreateOrder() {
                   onClick={handleSubmit}
                   disabled={submitting}
                 >
-                  {submitting ? 'Đang tạo đơn...' : 'Tạo đơn & Trừ kho'}
+                  {submitting ? (
+                    'Đang tạo đơn...'
+                  ) : (
+                    <>
+                      <Send size={16} className="inline mr-1.5" /> Tạo đơn & Trừ kho
+                    </>
+                  )}
                 </Button>
+                <p className="text-xs text-slate-400 mt-2 text-center">
+                  Tự động gửi tin nhắn Zalo (chi tiết đơn + QR) cho khách.
+                </p>
               </>
             )}
           </Card>

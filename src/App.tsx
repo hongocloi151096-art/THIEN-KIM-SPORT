@@ -3,20 +3,30 @@ import {
   ShoppingCart,
   Package,
   ClipboardList,
+  Users,
   Warehouse,
   Wallet,
   Settings,
   Menu,
   X,
+  Flame,
 } from 'lucide-react';
 import CreateOrder from '@/tabs/CreateOrder';
 import OrdersList from '@/tabs/OrdersList';
 import DailyConsolidation from '@/tabs/DailyConsolidation';
+import CustomersCRM from '@/tabs/CustomersCRM';
 import Inventory from '@/tabs/Inventory';
 import Finance from '@/tabs/Finance';
 import SettingsTab from '@/tabs/SettingsTab';
 
-type TabId = 'create-order' | 'orders' | 'consolidation' | 'inventory' | 'finance' | 'settings';
+type TabId =
+  | 'create-order'
+  | 'orders'
+  | 'consolidation'
+  | 'crm'
+  | 'inventory'
+  | 'finance'
+  | 'settings';
 
 interface TabDef {
   id: TabId;
@@ -28,9 +38,10 @@ const TABS: TabDef[] = [
   { id: 'create-order', label: 'Tạo đơn hàng', icon: ShoppingCart },
   { id: 'orders', label: 'Đơn hàng & Vận chuyển', icon: Package },
   { id: 'consolidation', label: 'Chốt đơn 12h', icon: ClipboardList },
+  { id: 'crm', label: 'Khách hàng & Quà Tết', icon: Users },
   { id: 'inventory', label: 'Kho & Bảng giá', icon: Warehouse },
   { id: 'finance', label: 'Tài chính & Công nợ', icon: Wallet },
-  { id: 'settings', label: 'Cài đặt & Link đặt', icon: Settings },
+  { id: 'settings', label: 'Cài đặt & Kết nối', icon: Settings },
 ];
 
 export default function App() {
@@ -43,18 +54,26 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
+    <div className="min-h-screen bg-slate-100 flex flex-col lg:flex-row">
       {/* Mobile header */}
-      <header className="lg:hidden bg-blue-900 text-white px-4 py-3 flex items-center justify-between sticky top-0 z-30 shadow-md">
+      <header
+        className="lg:hidden text-white px-4 py-3 flex items-center justify-between sticky top-0 z-30 shadow-md"
+        style={{ backgroundColor: '#1E3A8A' }}
+      >
         <div className="flex items-center gap-2">
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="p-1.5 rounded hover:bg-blue-800 transition-colors"
+            className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
             aria-label="Menu"
           >
             {mobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
           </button>
-          <span className="font-bold text-sm">Thiên Kim Sports</span>
+          <div className="flex items-center gap-1.5">
+            <span className="inline-flex items-center justify-center w-7 h-7 rounded-md bg-red-600">
+              <Flame size={16} />
+            </span>
+            <span className="font-bold text-sm">Thiên Kim Sports</span>
+          </div>
         </div>
       </header>
 
@@ -82,35 +101,54 @@ export default function App() {
       )}
 
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex flex-col w-64 bg-blue-900 text-white min-h-screen sticky top-0">
-        <div className="px-5 py-6 border-b border-blue-800">
-          <h1 className="font-bold text-lg leading-tight">Thiên Kim Sports</h1>
-          <p className="text-blue-300 text-xs mt-1">Quản lý bán hàng & Kho</p>
+      <aside
+        className="hidden lg:flex flex-col w-64 text-white min-h-screen sticky top-0"
+        style={{ backgroundColor: '#1E3A8A' }}
+      >
+        <div className="px-5 py-6 border-b border-white/10">
+          <div className="flex items-center gap-2.5">
+            <span className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-red-600 shadow-sm">
+              <Flame size={18} />
+            </span>
+            <div>
+              <h1 className="font-bold text-base leading-tight">Thiên Kim Sports</h1>
+              <p className="text-blue-200 text-xs mt-0.5">POS Quản lý Bán hàng</p>
+            </div>
+          </div>
         </div>
-        <nav className="flex-1 py-2">
-          {TABS.map((tab) => {
+        <nav className="flex-1 py-3 overflow-y-auto">
+          {TABS.map((tab, idx) => {
             const Icon = tab.icon;
+            const active = activeTab === tab.id;
             return (
               <button
                 key={tab.id}
                 onClick={() => handleTabChange(tab.id)}
-                className={`w-full flex items-center gap-3 px-5 py-3 text-sm font-medium transition-all relative ${
-                  activeTab === tab.id
-                    ? 'bg-blue-800 text-white'
-                    : 'text-blue-200 hover:bg-blue-800/50 hover:text-white'
+                className={`w-full flex items-center gap-3 px-5 py-3 text-sm font-medium transition-all relative group ${
+                  active
+                    ? 'bg-white/10 text-white'
+                    : 'text-blue-200 hover:bg-white/5 hover:text-white'
                 }`}
               >
-                {activeTab === tab.id && (
-                  <span className="absolute left-0 top-0 bottom-0 w-1 bg-red-600" />
+                {active && (
+                  <span className="absolute left-0 top-0 bottom-0 w-1 bg-red-600 rounded-r" />
                 )}
-                <Icon size={18} />
-                {tab.label}
+                <Icon
+                  size={18}
+                  className={active ? 'text-red-400' : 'text-blue-300 group-hover:text-white'}
+                />
+                <span className="flex-1 text-left">{tab.label}</span>
+                {idx === 2 && (
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-600 text-white">
+                    12H
+                  </span>
+                )}
               </button>
             );
           })}
         </nav>
-        <div className="px-5 py-4 border-t border-blue-800 text-xs text-blue-300">
-          <p className="font-medium text-blue-200">Công ty TNHH</p>
+        <div className="px-5 py-4 border-t border-white/10 text-xs text-blue-200">
+          <p className="font-medium text-blue-100">Công ty TNHH</p>
           <p>Thể Thao Thiên Kim</p>
         </div>
       </aside>
@@ -121,6 +159,7 @@ export default function App() {
           {activeTab === 'create-order' && <CreateOrder />}
           {activeTab === 'orders' && <OrdersList />}
           {activeTab === 'consolidation' && <DailyConsolidation />}
+          {activeTab === 'crm' && <CustomersCRM />}
           {activeTab === 'inventory' && <Inventory />}
           {activeTab === 'finance' && <Finance />}
           {activeTab === 'settings' && <SettingsTab />}
