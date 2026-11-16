@@ -9,9 +9,19 @@ import {
   Banknote,
   Truck,
   ExternalLink,
+  UserPlus,
+  Trash2,
+  Users,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { Settings, Supplier, Product } from '@/lib/types';
+import {
+  Settings,
+  Supplier,
+  Product,
+  SalesStaff,
+  SupplierChannel,
+  SUPPLIER_CHANNELS,
+} from '@/lib/types';
 import {
   PageHeader,
   Card,
@@ -24,6 +34,7 @@ export default function SettingsTab() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [staffList, setStaffList] = useState<SalesStaff[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
@@ -40,16 +51,21 @@ export default function SettingsTab() {
     company_name: '',
   });
 
-  // Supplier form
   const [showSupplierForm, setShowSupplierForm] = useState(false);
   const [newSupplier, setNewSupplier] = useState({ name: '', type: 'may', phone: '', zalo: '', address: '' });
 
+  const [showStaffForm, setShowStaffForm] = useState(false);
+  const [newStaff, setNewStaff] = useState({ name: '', phone: '', zalo_session_key: '', note: '' });
+
+  const [supplierEdits, setSupplierEdits] = useState<Record<string, { zalo_group_id: string; messenger_group_id: string; default_channel: string }>>({});
+
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [setRes, supRes, prodRes] = await Promise.all([
+    const [setRes, supRes, prodRes, staffRes] = await Promise.all([
       supabase.from('settings').select('*').maybeSingle(),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name').limit(5),
+      supabase.from('sales_staff').select('*').order('name'),
     ]);
     if (setRes.data) {
       setSettings(setRes.data);
@@ -64,8 +80,20 @@ export default function SettingsTab() {
         company_name: setRes.data.company_name || '',
       });
     }
-    if (supRes.data) setSuppliers(supRes.data);
+    if (supRes.data) {
+      setSuppliers(supRes.data);
+      const edits: Record<string, { zalo_group_id: string; messenger_group_id: string; default_channel: string }> = {};
+      supRes.data.forEach((s) => {
+        edits[s.id] = {
+          zalo_group_id: s.zalo_group_id || '',
+          messenger_group_id: s.messenger_group_id || '',
+          default_channel: s.default_channel || 'zalo_group',
+        };
+      });
+      setSupplierEdits(edits);
+    }
     if (prodRes.data) setProducts(prodRes.data);
+    if (staffRes.data) setStaffList(staffRes.data);
     setLoading(false);
   }, []);
 
@@ -143,6 +171,10 @@ export default function SettingsTab() {
       return;
     }
     setSuppliers((prev) => [...prev, data]);
+    setSupplierEdits((prev) => ({
+      ...prev,
+      [data.id]: { zalo_group_id: '', messenger_group_id: '', default_channel: 'zalo_group' },
+    }));
     setNewSupplier({ name: '', type: 'may', phone: '', zalo: '', address: '' });
     setShowSupplierForm(false);
   };
@@ -155,6 +187,76 @@ export default function SettingsTab() {
       return;
     }
     setSuppliers((prev) => prev.filter((s) => s.id !== id));
+    setSupplierEdits((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const handleSaveSupplierChannel = async (supplierId: string) => {
+    const edit = supplierEdits[supplierId];
+    if (!edit) return;
+    const { error } = await supabase
+      .from('suppliers')
+      .update({
+        zalo_group_id: edit.zalo_group_id || null,
+        messenger_group_id: edit.messenger_group_id || null,
+        default_channel: edit.default_channel,
+      })
+      .eq('id', supplierId);
+    if (error) {
+      alert('Lỗi lưu kênh: ' + error.message);
+      return;
+    }
+    setSuppliers((prev) =>
+      prev.map((s) =>
+        s.id === supplierId
+          ? {
+              ...s,
+              zalo_group_id: edit.zalo_group_id || null,
+              messenger_group_id: edit.messenger_group_id || null,
+              default_channel: edit.default_channel,
+            }
+          : s
+      )
+    );
+    setSavedMsg('Đã cập nhật kênh gửi cho nhà cung ứng');
+    setTimeout(() => setSavedMsg(''), 3000);
+  };
+
+  const handleAddStaff = async () => {
+    if (!newStaff.name || !newStaff.phone) {
+      alert('Vui lòng nhập tên và SĐT nhân viên');
+      return;
+    }
+    const { data, error } = await supabase
+      .from('sales_staff')
+      .insert({
+        name: newStaff.name,
+        phone: newStaff.phone,
+        zalo_session_key: newStaff.zalo_session_key || null,
+        note: newStaff.note || null,
+      })
+      .select()
+      .single();
+    if (error) {
+      alert('Lỗi: ' + error.message);
+      return;
+    }
+    setStaffList((prev) => [...prev, data]);
+    setNewStaff({ name: '', phone: '', zalo_session_key: '', note: '' });
+    setShowStaffForm(false);
+  };
+
+  const handleDeleteStaff = async (id: string) => {
+    if (!confirm('Xóa nhân viên này?')) return;
+    const { error } = await supabase.from('sales_staff').delete().eq('id', id);
+    if (error) {
+      alert('Lỗi: ' + error.message);
+      return;
+    }
+    setStaffList((prev) => prev.filter((s) => s.id !== id));
   };
 
   const copyOrderLink = async () => {
@@ -179,8 +281,8 @@ export default function SettingsTab() {
   return (
     <div>
       <PageHeader
-        title="Cài đặt & Link khách tự đặt"
-        subtitle="Cấu hình API, tài khoản ngân hàng và link đặt hàng công khai"
+        title="Cài đặt & Kết nối"
+        subtitle="Cấu hình API, ngân hàng, nhân viên kinh doanh và kênh gửi xưởng"
       />
 
       {savedMsg && (
@@ -249,58 +351,65 @@ export default function SettingsTab() {
         </Button>
       </div>
 
-      {/* Public order link */}
+      {/* Sales Staff Management */}
       <Card className="p-5 mt-6">
-        <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
-          <LinkIcon size={18} className="text-blue-700" />
-          Link khách tự đặt hàng
-        </h3>
-        <p className="text-sm text-slate-500 mb-4">
-          Gửi link này cho khách lẻ/HLV để họ tự chọn size và đặt hàng. Form hiển thị danh sách sản phẩm công khai.
-        </p>
-        <div className="flex items-center gap-3">
-          <div className="flex-1 px-4 py-2.5 bg-slate-50 rounded-lg border border-slate-200 text-sm text-slate-600 truncate">
-            {window.location.origin}/#order-form
-          </div>
-          <Button variant={copiedLink ? 'success' : 'outline'} onClick={copyOrderLink}>
-            {copiedLink ? <><Check size={16} className="inline mr-1" /> Đã copy</> : <><Copy size={16} className="inline mr-1" /> Copy link</>}
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+            <Users size={18} className="text-blue-700" />
+            Quản lý Nhân viên kinh doanh
+          </h3>
+          <Button variant="primary" size="sm" onClick={() => setShowStaffForm(!showStaffForm)}>
+            <UserPlus size={14} className="inline mr-1" /> Thêm nhân viên
           </Button>
         </div>
 
-        {/* Preview of public form */}
-        <div className="mt-6 border border-slate-200 rounded-lg p-5 bg-slate-50">
-          <p className="text-xs font-medium text-slate-500 uppercase mb-3">Xem trước form đặt hàng công khai</p>
-          <div className="bg-white rounded-lg p-4 border border-slate-200">
-            <h4 className="font-bold text-slate-800 text-center mb-1">THỂ THAO THIÊN KIM</h4>
-            <p className="text-xs text-center text-slate-500 mb-4">Form đặt hàng trực tuyến</p>
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <input disabled placeholder="Họ tên" className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50" />
-              <input disabled placeholder="SĐT" className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50" />
-              <input disabled placeholder="Địa chỉ" className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50 col-span-2" />
-              <select disabled className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50 col-span-2">
-                <option>Chọn sản phẩm...</option>
-                {products.map((p) => (
-                  <option key={p.id}>{p.name} {p.variant}</option>
-                ))}
-              </select>
-              <select disabled className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50">
-                <option>Size</option>
-              </select>
-              <input disabled placeholder="Số lượng" type="number" className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50" />
+        {showStaffForm && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4 p-4 bg-blue-50 rounded-lg">
+            <Input label="Họ tên *" value={newStaff.name} onChange={(v) => setNewStaff({ ...newStaff, name: v })} placeholder="VD: Nguyễn Văn A" />
+            <Input label="SĐT *" value={newStaff.phone} onChange={(v) => setNewStaff({ ...newStaff, phone: v })} placeholder="0901234567" />
+            <Input label="Mã phiên Zalo" value={newStaff.zalo_session_key} onChange={(v) => setNewStaff({ ...newStaff, zalo_session_key: v })} placeholder="sender_session_key" />
+            <Input label="Ghi chú" value={newStaff.note} onChange={(v) => setNewStaff({ ...newStaff, note: v })} placeholder="Ghi chú" />
+            <div className="md:col-span-4 flex justify-end">
+              <div className="flex gap-2">
+                <Button variant="primary" onClick={handleAddStaff}>Lưu nhân viên</Button>
+                <Button variant="outline" onClick={() => setShowStaffForm(false)}>Hủy</Button>
+              </div>
             </div>
-            <button disabled className="w-full py-2.5 bg-blue-700 text-white rounded-lg text-sm font-medium opacity-60">
-              Gửi đặt hàng
-            </button>
           </div>
+        )}
+
+        <div className="space-y-2">
+          {staffList.map((s) => (
+            <div key={s.id} className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
+              <div>
+                <p className="font-medium text-slate-700">{s.name}</p>
+                <div className="flex items-center gap-3 mt-0.5">
+                  <span className="text-xs text-slate-400">SĐT: {s.phone}</span>
+                  {s.zalo_session_key && <span className="text-xs text-slate-400">Zalo key: {s.zalo_session_key}</span>}
+                  {s.is_active && <Badge variant="success">Đang hoạt động</Badge>}
+                </div>
+              </div>
+              <button
+                onClick={() => handleDeleteStaff(s.id)}
+                className="text-slate-400 hover:text-red-600 transition-colors"
+                title="Xóa"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+          ))}
+          {staffList.length === 0 && (
+            <p className="text-sm text-slate-400 text-center py-4">Chưa có nhân viên nào. Thêm nhân viên để gán vào đơn hàng và gửi tin nhắn Zalo.</p>
+          )}
         </div>
       </Card>
 
-      {/* Supplier management */}
+      {/* Supplier management with channel config */}
       <Card className="p-5 mt-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold text-slate-800 flex items-center gap-2">
             <Truck size={18} className="text-blue-700" />
-            Quản lý Nhà cung ứng
+            Quản lý Nhà cung ứng & Kênh gửi
           </h3>
           <Button variant="primary" size="sm" onClick={() => setShowSupplierForm(!showSupplierForm)}>
             + Thêm nhà cung ứng
@@ -333,28 +442,111 @@ export default function SettingsTab() {
           </div>
         )}
 
-        <div className="space-y-2">
-          {suppliers.map((s) => (
-            <div key={s.id} className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
-              <div>
-                <p className="font-medium text-slate-700">{s.name}</p>
-                <div className="flex items-center gap-3 mt-0.5">
-                  <Badge variant="info">{s.type}</Badge>
-                  {s.contact_phone && <span className="text-xs text-slate-400">SĐT: {s.contact_phone}</span>}
-                  {s.contact_zalo && <span className="text-xs text-slate-400">Zalo: {s.contact_zalo}</span>}
+        <div className="space-y-3">
+          {suppliers.map((s) => {
+            const edit = supplierEdits[s.id] || { zalo_group_id: '', messenger_group_id: '', default_channel: 'zalo_group' };
+            return (
+              <div key={s.id} className="border border-slate-200 rounded-lg p-4">
+                <div className="flex items-start justify-between mb-3">
+                  <div>
+                    <p className="font-medium text-slate-700">{s.name}</p>
+                    <div className="flex items-center gap-3 mt-0.5">
+                      <Badge variant="info">{s.type}</Badge>
+                      {s.contact_phone && <span className="text-xs text-slate-400">SĐT: {s.contact_phone}</span>}
+                      {s.contact_zalo && <span className="text-xs text-slate-400">Zalo: {s.contact_zalo}</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteSupplier(s.id)}
+                    className="text-slate-400 hover:text-red-600 transition-colors text-sm"
+                  >
+                    Xóa
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+                  <Input
+                    label="ID Nhóm Zalo"
+                    value={edit.zalo_group_id}
+                    onChange={(v) => setSupplierEdits((prev) => ({ ...prev, [s.id]: { ...edit, zalo_group_id: v } }))}
+                    placeholder="zalo_group_id"
+                  />
+                  <Input
+                    label="ID Nhóm Messenger"
+                    value={edit.messenger_group_id}
+                    onChange={(v) => setSupplierEdits((prev) => ({ ...prev, [s.id]: { ...edit, messenger_group_id: v } }))}
+                    placeholder="messenger_group_id"
+                  />
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1.5">Kênh gửi mặc định</label>
+                    <select
+                      value={edit.default_channel}
+                      onChange={(e) => setSupplierEdits((prev) => ({ ...prev, [s.id]: { ...edit, default_channel: e.target.value } }))}
+                      className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm bg-white"
+                    >
+                      {SUPPLIER_CHANNELS.map((c) => (
+                        <option key={c.value} value={c.value}>{c.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <Button
+                    variant="primary"
+                    onClick={() => handleSaveSupplierChannel(s.id)}
+                  >
+                    <Save size={14} className="inline mr-1" /> Lưu kênh
+                  </Button>
                 </div>
               </div>
-              <button
-                onClick={() => handleDeleteSupplier(s.id)}
-                className="text-slate-400 hover:text-red-600 transition-colors text-sm"
-              >
-                Xóa
-              </button>
-            </div>
-          ))}
+            );
+          })}
           {suppliers.length === 0 && (
             <p className="text-sm text-slate-400 text-center py-4">Chưa có nhà cung ứng nào</p>
           )}
+        </div>
+      </Card>
+
+      {/* Public order link */}
+      <Card className="p-5 mt-6">
+        <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
+          <LinkIcon size={18} className="text-blue-700" />
+          Link khách tự đặt hàng
+        </h3>
+        <p className="text-sm text-slate-500 mb-4">
+          Gửi link này cho khách lẻ/HLV để họ tự chọn size và đặt hàng.
+        </p>
+        <div className="flex items-center gap-3">
+          <div className="flex-1 px-4 py-2.5 bg-slate-50 rounded-lg border border-slate-200 text-sm text-slate-600 truncate">
+            {window.location.origin}/#order-form
+          </div>
+          <Button variant={copiedLink ? 'success' : 'outline'} onClick={copyOrderLink}>
+            {copiedLink ? <><Check size={16} className="inline mr-1" /> Đã copy</> : <><Copy size={16} className="inline mr-1" /> Copy link</>}
+          </Button>
+        </div>
+
+        <div className="mt-6 border border-slate-200 rounded-lg p-5 bg-slate-50">
+          <p className="text-xs font-medium text-slate-500 uppercase mb-3">Xem trước form đặt hàng công khai</p>
+          <div className="bg-white rounded-lg p-4 border border-slate-200">
+            <h4 className="font-bold text-slate-800 text-center mb-1">THỂ THAO THIÊN KIM</h4>
+            <p className="text-xs text-center text-slate-500 mb-4">Form đặt hàng trực tuyến</p>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <input disabled placeholder="Họ tên" className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50" />
+              <input disabled placeholder="SĐT" className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50" />
+              <input disabled placeholder="Địa chỉ" className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50 col-span-2" />
+              <select disabled className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50 col-span-2">
+                <option>Chọn sản phẩm...</option>
+                {products.map((p) => (
+                  <option key={p.id}>{p.name} {p.variant}</option>
+                ))}
+              </select>
+              <select disabled className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50">
+                <option>Size</option>
+              </select>
+              <input disabled placeholder="Số lượng" type="number" className="px-3 py-2 border border-slate-200 rounded text-sm bg-slate-50" />
+            </div>
+            <button disabled className="w-full py-2.5 bg-blue-700 text-white rounded-lg text-sm font-medium opacity-60">
+              Gửi đặt hàng
+            </button>
+          </div>
         </div>
       </Card>
     </div>

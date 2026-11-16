@@ -1,168 +1,374 @@
-import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
-import { Users, TrendingUp, Award, Gift, Search, Phone, MapPin, ShoppingBag } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import {
+  Users,
+  Search,
+  Upload,
+  Crown,
+  Medal,
+  Award,
+  Gift,
+  Phone,
+  TrendingUp,
+  Check,
+  AlertCircle,
+} from 'lucide-react';
+import { supabase } from '@/lib/supabase';
+import {
+  Customer,
+  Order,
+  SalesStaff,
+  getVipTier,
+  VIP_TIERS,
+} from '@/lib/types';
+import { formatVND, formatDate } from '@/lib/pricing';
+import {
+  PageHeader,
+  Card,
+  Button,
+  Badge,
+  Select,
+  StatCard,
+  EmptyState,
+} from '@/components/ui';
 
-interface CustomerStat {
-  id: string;
-  name: string;
-  phone: string;
-  address: string;
-  customer_type: string;
-  total_orders: number;
-  total_spent: number;
-  last_order_date: string;
+interface CustomerRank {
+  customer: Customer;
+  totalRevenue: number;
+  orderCount: number;
+  lastOrderDate: string | null;
+  staffName: string | null;
 }
 
-export const CustomersCRM: React.FC = () => {
-  const [customers, setCustomers] = useState<CustomerStat[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [loading, setLoading] = useState(true);
+const VIP_BADGES: Record<string, { label: string; icon: typeof Crown; variant: 'info' | 'warning' | 'neutral' }> = {
+  kim_cuong: { label: 'Kim Cương', icon: Crown, variant: 'info' },
+  vang: { label: 'Vàng', icon: Medal, variant: 'warning' },
+  bac: { label: 'Bạc', icon: Award, variant: 'neutral' },
+};
 
-  useEffect(() => {
-    fetchCustomerStats();
+const TET_GIFTS: Record<string, string> = {
+  kim_cuong: 'Giày Vovinam cao cấp + Quà Tết hộp cao cấp + Chiết khấu 5% đơn đầu năm',
+  vang: 'Đôi đai lụa Vovinam + Hộp bánh Tết doanh nghiệp',
+  bac: 'Khăn võ + Hộp mứt Tết tri ân',
+  none: 'Thiệp chúc mừng năm mới qua Zalo',
+};
+
+export default function CustomersCRM() {
+  const [ranks, setRanks] = useState<CustomerRank[]>([]);
+  const [staffList, setStaffList] = useState<SalesStaff[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [staffFilter, setStaffFilter] = useState('');
+  const [importMsg, setImportMsg] = useState('');
+  const [importErr, setImportErr] = useState('');
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    const [custRes, orderRes, staffRes] = await Promise.all([
+      supabase.from('customers').select('*'),
+      supabase.from('orders').select('id, customer_id, customer_phone, total_amount, sales_staff_id, created_at'),
+      supabase.from('sales_staff').select('*').order('name'),
+    ]);
+
+    const customers: Customer[] = custRes.data || [];
+    const orders: Order[] = orderRes.data || [];
+    setStaffList(staffRes.data || []);
+
+    const staffNameMap = new Map<string, string>();
+    (staffRes.data || []).forEach((s) => staffNameMap.set(s.id, s.name));
+
+    const rankMap = new Map<string, CustomerRank>();
+    customers.forEach((c) => {
+      rankMap.set(c.id, {
+        customer: c,
+        totalRevenue: 0,
+        orderCount: 0,
+        lastOrderDate: null,
+        staffName: null,
+      });
+    });
+
+    orders.forEach((o) => {
+      let rank: CustomerRank | undefined;
+      if (o.customer_id) {
+        rank = rankMap.get(o.customer_id);
+      }
+      if (!rank && o.customer_phone) {
+        rank = Array.from(rankMap.values()).find((r) => r.customer.phone === o.customer_phone);
+      }
+      if (!rank) return;
+      rank.totalRevenue += o.total_amount || 0;
+      rank.orderCount += 1;
+      if (!rank.lastOrderDate || o.created_at > rank.lastOrderDate) {
+        rank.lastOrderDate = o.created_at;
+      }
+      if (o.sales_staff_id && !rank.staffName) {
+        rank.staffName = staffNameMap.get(o.sales_staff_id) || null;
+      }
+    });
+
+    let list = Array.from(rankMap.values()).filter((r) => r.orderCount > 0 || r.totalRevenue > 0);
+    list.sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+    setRanks(list);
+    setLoading(false);
   }, []);
 
-  const fetchCustomerStats = async () => {
-    try {
-      setLoading(true);
-      // Lấy danh sách khách hàng và đơn hàng từ Supabase
-      const { data: custData, error: custError } = await supabase.from('customers').select('*');
-      if (custError) throw custError;
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
-      const { data: orderData, error: orderError } = await supabase.from('orders').select('customer_id, total_amount, created_id');
-      if (orderError) throw orderError;
+  const filteredRanks = ranks.filter((r) => {
+    if (staffFilter && r.staffName !== staffFilter) return false;
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      r.customer.phone.includes(q) ||
+      r.customer.name.toLowerCase().includes(q)
+    );
+  });
 
-      // Tổng hợp doanh thu theo từng khách hàng
-      const statsMap: { [key: string]: { orders: number; spent: number; lastDate: string } } = {};
-      
-      (orderData || []).forEach((ord: any) => {
-        if (!ord.customer_id) return;
-        if (!statsMap[ord.customer_id]) {
-          statsMap[ord.customer_id] = { orders: 0, spent: 0, lastDate: ord.created_at };
+  const totalRevenue = ranks.reduce((s, r) => s + r.totalRevenue, 0);
+  const vipCount = ranks.filter((r) => getVipTier(r.totalRevenue) !== 'none').length;
+  const customerCount = ranks.length;
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportMsg('');
+    setImportErr('');
+
+    const text = await file.text();
+    const delimiter = text.includes(';') ? ';' : ',';
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) {
+      setImportErr('File CSV không có dữ liệu (cần ít nhất 1 dòng tiêu đề + 1 dòng dữ liệu).');
+      e.target.value = '';
+      return;
+    }
+
+    const parseRow = (line: string): string[] => {
+      const result: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (ch === delimiter && !inQuotes) {
+          result.push(current);
+          current = '';
+        } else {
+          current += ch;
         }
-        statsMap[ord.customer_id].orders += 1;
-        statsMap[ord.customer_id].spent += Number(ord.total_amount || 0);
-        if (ord.created_at > statsMap[ord.customer_id].lastDate) {
-          statsMap[ord.customer_id].lastDate = ord.created_at;
-        }
+      }
+      result.push(current);
+      return result;
+    };
+
+    const headers = parseRow(lines[0]).map((h) => h.replace(/^"|"$/g, '').trim().toLowerCase());
+    let success = 0;
+    let fail = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const values = parseRow(lines[i]);
+      const row: Record<string, string> = {};
+      headers.forEach((h, idx) => {
+        row[h] = (values[idx] || '').replace(/^"|"$/g, '').trim();
       });
 
-      const formatted = (custData || []).map((c: any) => ({
-        id: c.id,
-        name: c.name || 'Khách lẻ',
-        phone: c.phone || 'Chưa có SĐT',
-        address: c.address || 'Chưa cập nhật',
-        customer_type: c.customer_type || 'le',
-        total_orders: statsMap[c.id]?.orders || 0,
-        total_spent: statsMap[c.id]?.spent || 0,
-        last_order_date: statsMap[c.id]?.lastDate || c.created_at
-      })).sort((a, b) => b.total_spent - a.total_spent);
+      const phone =
+        row['phone'] || row['sdt'] || row['sđt'] || row['dien_thoai'] || row['so_dien_thoai'] || row['tel'] || '';
+      const name =
+        row['name'] || row['ten'] || row['ho_ten'] || row['khach_hang'] || row['customer'] || '';
+      if (!phone) {
+        fail++;
+        continue;
+      }
+      const address = row['address'] || row['dia_chi'] || row['diachi'] || '';
+      const note = row['note'] || row['ghi_chu'] || row['ghichu'] || '';
+      const typeRaw = row['type'] || row['loai'] || row['customer_type'] || 'le';
+      const customerType = typeRaw.toLowerCase().includes('hlv') ? 'hlv' : 'le';
 
-      setCustomers(formatted);
-    } catch (err) {
-      console.error('Lỗi tải dữ liệu khách hàng:', err);
-    } finally {
-      setLoading(false);
+      const { error } = await supabase
+        .from('customers')
+        .upsert(
+          {
+            phone,
+            name: name || 'Khách hàng',
+            customer_type: customerType,
+            address: address || null,
+            note: note || null,
+          },
+          { onConflict: 'phone' }
+        );
+
+      if (error) {
+        fail++;
+      } else {
+        success++;
+      }
     }
+
+    setImportMsg(`Đã nhập ${success} khách hàng thành công${fail > 0 ? `, ${fail} lỗi` : ''}.`);
+    setTimeout(() => setImportMsg(''), 6000);
+    fetchData();
+    e.target.value = '';
   };
 
-  const filteredCustomers = customers.filter(c => 
-    c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    c.phone.includes(searchTerm)
-  );
-
-  const getVipBadge = (spent: number) => {
-    if (spent >= 50000000) return <span className="px-2.5 py-1 text-xs font-bold bg-amber-100 text-amber-800 rounded-full flex items-center gap-1"><Award size={14}/> Kim Cương (VIP 1)</span>;
-    if (spent >= 20000000) return <span className="px-2.5 py-1 text-xs font-bold bg-purple-100 text-purple-800 rounded-full flex items-center gap-1"><Award size={14}/> Vàng (VIP 2)</span>;
-    if (spent >= 10000000) return <span className="px-2.5 py-1 text-xs font-bold bg-blue-100 text-blue-800 rounded-full flex items-center gap-1"><TrendingUp size={14}/> Bạc (Thân thiết)</span>;
-    return <span className="px-2.5 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">Khách tiêu chuẩn</span>;
-  };
-
-  const getTetGiftSuggestion = (spent: number) => {
-    if (spent >= 50000000) return '🎁 Tặng Giỏ quà Tết cao cấp + Lịch độc quyền + Chiết khấu 5% đơn đầu năm';
-    if (spent >= 20000000) return '🎁 Tặng Hộp quà Tết doanh nghiệp + Bình khí danh dự Thiên Kim';
-    if (spent >= 10000000) return '🎁 Tặng Thiệp Tết + Hộp mứt Tết tri ân';
-    return '🧧 Gửi thiệp chúc mừng năm mới Zalo';
-  };
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-700" />
+      </div>
+    );
+  }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Users className="text-blue-600" /> Thống kê Doanh thu & Quà Tết Khách hàng
-          </h1>
-          <p className="text-sm text-gray-500">Quản lý lịch sử mua hàng, xếp hạng VIP và gợi ý chính sách ưu đãi cuối năm</p>
+    <div>
+      <PageHeader
+        title="Khách hàng & Quà Tết"
+        subtitle="Xếp hạng doanh thu, huy hiệu VIP và gợi ý quà Tết theo khách hàng"
+      />
+
+      {importMsg && (
+        <div className="mb-4 bg-green-50 border border-green-200 rounded-xl p-3 flex items-center gap-2 text-sm text-green-700">
+          <Check size={16} /> {importMsg}
         </div>
-        <div className="relative w-full md:w-80">
-          <Search className="absolute left-3 top-2.5 text-gray-400" size={18} />
-          <input
-            type="text"
-            placeholder="Tìm theo tên hoặc SĐT khách..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-          />
+      )}
+      {importErr && (
+        <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-3 flex items-center gap-2 text-sm text-red-700">
+          <AlertCircle size={16} /> {importErr}
         </div>
+      )}
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <StatCard label="Tổng khách hàng" value={String(customerCount)} variant="primary" icon={<Users size={18} className="text-blue-700" />} />
+        <StatCard label="Khách VIP" value={String(vipCount)} variant="warning" icon={<Crown size={18} className="text-amber-600" />} />
+        <StatCard label="Tổng doanh thu" value={formatVND(totalRevenue)} variant="default" icon={<TrendingUp size={18} className="text-slate-600" />} />
+        <StatCard label="TB / khách" value={customerCount ? formatVND(Math.round(totalRevenue / customerCount)) : '0đ'} />
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+      <Card className="p-4 mb-6">
+        <div className="flex flex-col lg:flex-row gap-3">
+          <div className="relative flex-1">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Tìm theo SĐT hoặc tên khách hàng..."
+              className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <Select value={staffFilter} onChange={setStaffFilter} className="lg:w-56">
+            <option value="">Tất cả nhân viên</option>
+            {staffList.map((s) => (
+              <option key={s.id} value={s.name}>{s.name}</option>
+            ))}
+          </Select>
+          <label className="cursor-pointer">
+            <span className="inline-flex items-center px-4 py-2.5 text-sm font-medium rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 bg-white transition-all">
+              <Upload size={16} className="inline mr-1.5" /> Import CSV
+            </span>
+            <input type="file" accept=".csv,text/csv" onChange={handleImport} className="hidden" />
+          </label>
+        </div>
+        <p className="text-xs text-slate-400 mt-2">
+          Hỗ trợ file Excel/CSV tiếng Việt (dấu ; hoặc ,). Cột cần: SĐT, Tên. Tương thích file ViettelPost.
+        </p>
+      </Card>
+
+      {filteredRanks.length === 0 ? (
+        <Card className="p-6">
+          <EmptyState message="Không có khách hàng nào" icon={<Users size={40} />} />
+        </Card>
+      ) : (
+        <Card className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[700px]">
             <thead>
-              <tr className="bg-gray-50 text-gray-700 text-xs uppercase tracking-wider border-b">
-                <th className="p-4">STT</th>
-                <th className="p-4">Khách Hàng / Đơn Vị</th>
-                <th className="p-4">Phân Loại</th>
-                <th className="p-4 text-center">Tổng Đơn</th>
-                <th className="p-4 text-right">Tổng Doanh Thu</th>
-                <th className="p-4">Xếp Hạng VIP</th>
-                <th className="p-4">Gợi Ý Quà Tết & Ưu Đãi</th>
+              <tr className="bg-slate-50 border-b border-slate-200">
+                <th className="text-left px-4 py-3 font-semibold text-slate-600 w-10">#</th>
+                <th className="text-left px-4 py-3 font-semibold text-slate-600">Khách hàng</th>
+                <th className="text-left px-4 py-3 font-semibold text-slate-600">SĐT</th>
+                <th className="text-left px-4 py-3 font-semibold text-slate-600">Nhân viên</th>
+                <th className="text-right px-4 py-3 font-semibold text-slate-600">Doanh thu</th>
+                <th className="text-center px-4 py-3 font-semibold text-slate-600">SL đơn</th>
+                <th className="text-center px-4 py-3 font-semibold text-slate-600">Huy hiệu</th>
+                <th className="text-left px-4 py-3 font-semibold text-slate-600">Gợi ý quà Tết</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200 text-sm">
-              {loading ? (
-                <tr>
-                  <td colSpan={7} className="text-center py-8 text-gray-500">Đang tải dữ liệu thống kê...</td>
-                </tr>
-              ) : filteredCustomers.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="text-center py-8 text-gray-500">Không tìm thấy khách hàng nào.</td>
-                </tr>
-              ) : (
-                filteredCustomers.map((c, index) => (
-                  <tr key={c.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="p-4 text-gray-500 font-medium">{index + 1}</td>
-                    <td className="p-4">
-                      <div className="font-bold text-gray-900">{c.name}</div>
-                      <div className="text-xs text-gray-500 flex items-center gap-2 mt-0.5">
-                        <span className="flex items-center gap-1"><Phone size={12}/> {c.phone}</span>
-                        <span className="flex items-center gap-1"><MapPin size={12}/> {c.address}</span>
-                      </div>
+            <tbody>
+              {filteredRanks.map((r, i) => {
+                const tier = getVipTier(r.totalRevenue);
+                const badge = tier !== 'none' ? VIP_BADGES[tier] : null;
+                const Icon = badge?.icon;
+                return (
+                  <tr key={r.customer.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                    <td className="px-4 py-3 text-slate-400 font-medium">
+                      {i < 3 ? (
+                        <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold text-white ${
+                          i === 0 ? 'bg-amber-500' : i === 1 ? 'bg-slate-400' : 'bg-orange-700'
+                        }`}>
+                          {i + 1}
+                        </span>
+                      ) : (
+                        i + 1
+                      )}
                     </td>
-                    <td className="p-4">
-                      <span className={`px-2 py-0.5 text-xs font-semibold rounded ${c.customer_type === 'hlv' ? 'bg-indigo-100 text-indigo-700' : 'bg-green-100 text-green-700'}`}>
-                        {c.customer_type === 'hlv' ? 'HLV / Đại Lý' : 'Khách Lẻ / CLB'}
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-slate-800">{r.customer.name}</p>
+                      <p className="text-xs text-slate-400">
+                        {r.customer.customer_type === 'hlv' ? 'HLV / Đại lý' : 'Khách lẻ'}
+                        {r.lastOrderDate && <> · Đơn cuối: {formatDate(r.lastOrderDate)}</>}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1 text-slate-600 text-xs">
+                        <Phone size={12} className="text-slate-400" /> {r.customer.phone}
                       </span>
                     </td>
-                    <td className="p-4 text-center font-semibold text-gray-700">{c.total_orders}</td>
-                    <td className="p-4 text-right font-bold text-blue-600">
-                      {c.total_spent.toLocaleString('vi-VN')} đ
+                    <td className="px-4 py-3 text-slate-600 text-xs">{r.staffName || '—'}</td>
+                    <td className="px-4 py-3 text-right">
+                      <span className="font-semibold text-slate-800">{formatVND(r.totalRevenue)}</span>
                     </td>
-                    <td className="p-4">{getVipBadge(c.total_spent)}</td>
-                    <td className="p-4 text-xs font-medium text-gray-700">
-                      <div className="flex items-center gap-1.5 bg-amber-50 p-2 rounded border border-amber-200">
-                        <Gift size={14} className="text-amber-600 shrink-0" />
-                        <span>{getTetGiftSuggestion(c.total_spent)}</span>
-                      </div>
+                    <td className="px-4 py-3 text-center text-slate-600">{r.orderCount}</td>
+                    <td className="px-4 py-3 text-center">
+                      {badge && Icon ? (
+                        <Badge variant={badge.variant}>
+                          <Icon size={12} className="inline mr-1" />
+                          {badge.label}
+                        </Badge>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-start gap-1.5 text-xs text-slate-600">
+                        <Gift size={14} className="text-red-600 mt-0.5 shrink-0" />
+                        <span>{TET_GIFTS[tier]}</span>
+                      </span>
                     </td>
                   </tr>
-                ))
-              )}
+                );
+              })}
             </tbody>
           </table>
+        </Card>
+      )}
+
+      <Card className="p-4 mt-6">
+        <div className="flex flex-wrap items-center gap-4 text-xs">
+          <span className="font-semibold text-slate-600 uppercase">Phân hạng VIP:</span>
+          <Badge variant="info"><Crown size={12} className="inline mr-1" /> Kim Cương ≥ {formatVND(VIP_TIERS.kim_cuong.min)}</Badge>
+          <Badge variant="warning"><Medal size={12} className="inline mr-1" /> Vàng ≥ {formatVND(VIP_TIERS.vang.min)}</Badge>
+          <Badge variant="neutral"><Award size={12} className="inline mr-1" /> Bạc ≥ {formatVND(VIP_TIERS.bac.min)}</Badge>
         </div>
-      </div>
+      </Card>
     </div>
   );
-};
+}

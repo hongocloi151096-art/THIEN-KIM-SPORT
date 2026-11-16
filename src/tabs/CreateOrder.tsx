@@ -13,7 +13,7 @@ import {
   Package,
   Shirt,
   Swords,
-  Glove,
+  Shield,
   Users as UsersIcon,
   Send,
 } from 'lucide-react';
@@ -58,7 +58,7 @@ interface CategoryCard {
 
 const CATEGORY_CARDS: CategoryCard[] = [
   { key: 'Võ phục & Phụ kiện', label: 'Võ phục & Phụ kiện', icon: Shirt, accent: 'from-blue-500 to-blue-700' },
-  { key: 'Dụng cụ võ thuật', label: 'Dụng cụ võ thuật', icon: Glove, accent: 'from-amber-500 to-amber-700' },
+  { key: 'Dụng cụ võ thuật', label: 'Dụng cụ võ thuật', icon: Shield, accent: 'from-amber-500 to-amber-700' },
   { key: 'Binh khí Vovinam', label: 'Binh khí Vovinam', icon: Swords, accent: 'from-red-500 to-red-700' },
   { key: 'Áo thun & Đồng phục', label: 'Áo thun & Đồng phục', icon: UsersIcon, accent: 'from-emerald-500 to-emerald-700' },
 ];
