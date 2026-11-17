@@ -16,7 +16,6 @@ import {
   Shield,
   Users as UsersIcon,
   Send,
-  X,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import {
@@ -130,37 +129,6 @@ export default function CreateOrder() {
     if (selectedStaffId) localStorage.setItem(STAFF_LS_KEY, selectedStaffId);
   }, [selectedStaffId]);
 
-  // Tự động nhận diện khách cũ khi nhập trực tiếp SĐT
-  useEffect(() => {
-    const cleanPhone = phone.trim();
-    if (cleanPhone.length < 8) return;
-    if (existingCustomer && existingCustomer.phone === cleanPhone) return;
-
-    const matchedLocal = customers.find((c) => c.phone === cleanPhone);
-    if (matchedLocal) {
-      setExistingCustomer(matchedLocal);
-      if (!customerName.trim()) setCustomerName(matchedLocal.name);
-      if (!customerAddress.trim()) setCustomerAddress(matchedLocal.address || '');
-      setPriceType(matchedLocal.customer_type === 'hlv' ? 'hlv' : 'le');
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      const { data } = await supabase
-        .from('customers')
-        .select('*')
-        .eq('phone', cleanPhone)
-        .maybeSingle();
-      if (data) {
-        setExistingCustomer(data);
-        if (!customerName.trim()) setCustomerName(data.name);
-        if (!customerAddress.trim()) setCustomerAddress(data.address || '');
-        setPriceType(data.customer_type === 'hlv' ? 'hlv' : 'le');
-      }
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [phone, customers, existingCustomer, customerName, customerAddress]);
-
   useEffect(() => {
     setCart((prev) =>
       prev.map((item) => {
@@ -170,11 +138,26 @@ export default function CreateOrder() {
     );
   }, [priceType]);
 
+  // Chỉ tự động tìm khách khi người dùng trực tiếp gõ thay đổi ở ô SĐT
+  const handlePhoneChange = (newPhone: string) => {
+    setPhone(newPhone);
+    const cleanPhone = newPhone.trim();
+    if (cleanPhone.length < 8) return;
+
+    const matchedLocal = customers.find((c) => c.phone === cleanPhone);
+    if (matchedLocal) {
+      setExistingCustomer(matchedLocal);
+      if (!customerName.trim()) setCustomerName(matchedLocal.name);
+      if (!customerAddress.trim()) setCustomerAddress(matchedLocal.address || '');
+      setPriceType(matchedLocal.customer_type === 'hlv' ? 'hlv' : 'le');
+    }
+  };
+
   // Lọc danh sách khách hàng gợi ý theo tên (có dấu / không dấu) hoặc SĐT
   const suggestedCustomers = customers
     .filter((c) => {
       const rawQuery = customerName.trim();
-      if (!rawQuery) return false;
+      if (!rawQuery) return true;
       const normalizedQuery = removeVietnameseAccents(rawQuery);
       const normalizedName = removeVietnameseAccents(c.name || '');
       return (
@@ -182,7 +165,7 @@ export default function CreateOrder() {
         (c.phone || '').includes(rawQuery)
       );
     })
-    .slice(0, 8);
+    .slice(0, 10);
 
   const handleSelectCustomer = (cust: Customer) => {
     setExistingCustomer(cust);
@@ -190,14 +173,6 @@ export default function CreateOrder() {
     setPhone(cust.phone);
     setCustomerAddress(cust.address || '');
     setPriceType(cust.customer_type === 'hlv' ? 'hlv' : 'le');
-    setShowNameSuggestions(false);
-  };
-
-  const handleClearCustomer = () => {
-    setExistingCustomer(null);
-    setCustomerName('');
-    setPhone('');
-    setCustomerAddress('');
     setShowNameSuggestions(false);
   };
 
@@ -327,19 +302,28 @@ export default function CreateOrder() {
       const finalAddress = customerAddress.trim() || null;
 
       if (!customerId) {
-        const { data: newCustomer, error: custErr } = await supabase
-          .from('customers')
-          .insert({
-            phone: finalPhone,
-            name: finalName,
-            customer_type: priceType === 'hlv' ? 'hlv' : 'le',
-            address: finalAddress,
-          })
-          .select()
-          .single();
-        if (custErr) throw custErr;
-        customerId = newCustomer.id;
-        setCustomers((prev) => [...prev, newCustomer]);
+        const matchedByPhone = customers.find((c) => c.phone === finalPhone);
+        if (matchedByPhone) {
+          customerId = matchedByPhone.id;
+          await supabase
+            .from('customers')
+            .update({ name: finalName, address: finalAddress })
+            .eq('id', matchedByPhone.id);
+        } else {
+          const { data: newCustomer, error: custErr } = await supabase
+            .from('customers')
+            .insert({
+              phone: finalPhone,
+              name: finalName,
+              customer_type: priceType === 'hlv' ? 'hlv' : 'le',
+              address: finalAddress,
+            })
+            .select()
+            .single();
+          if (custErr) throw custErr;
+          customerId = newCustomer.id;
+          setCustomers((prev) => [...prev, newCustomer]);
+        }
       } else if (
         existingCustomer &&
         (existingCustomer.address !== finalAddress || existingCustomer.name !== finalName)
@@ -494,21 +478,10 @@ export default function CreateOrder() {
         <div className="xl:col-span-2 space-y-6">
           {/* Customer info - Ưu tiên nhập Tên khách hàng trước kèm gợi ý thông minh */}
           <Card className="p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-slate-800 flex items-center gap-2">
-                <User size={18} className="text-blue-700" />
-                Thông tin khách hàng
-              </h3>
-              {(customerName || phone || customerAddress) && (
-                <button
-                  type="button"
-                  onClick={handleClearCustomer}
-                  className="text-xs text-slate-500 hover:text-red-600 flex items-center gap-1 transition-colors"
-                >
-                  <X size={14} /> Xóa nhập lại
-                </button>
-              )}
-            </div>
+            <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
+              <User size={18} className="text-blue-700" />
+              Thông tin khách hàng
+            </h3>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Ô 1: Tên khách hàng (Ưu tiên đầu tiên + Gợi ý danh sách khách hàng) */}
@@ -526,9 +499,14 @@ export default function CreateOrder() {
                     onFocus={() => setShowNameSuggestions(true)}
                     onBlur={() => setTimeout(() => setShowNameSuggestions(false), 180)}
                     onChange={(e) => {
-                      setCustomerName(e.target.value);
+                      const val = e.target.value;
+                      setCustomerName(val);
                       setShowNameSuggestions(true);
-                      if (existingCustomer && e.target.value !== existingCustomer.name) {
+                      if (!val.trim()) {
+                        setExistingCustomer(null);
+                        setPhone('');
+                        setCustomerAddress('');
+                      } else if (existingCustomer && val !== existingCustomer.name) {
                         setExistingCustomer(null);
                       }
                     }}
@@ -539,7 +517,7 @@ export default function CreateOrder() {
 
                 {existingCustomer && (
                   <p className="text-xs text-green-600 mt-1.5 flex items-center gap-1">
-                    <Check size={14} /> Đã chọn khách cũ: {existingCustomer.name} (
+                    <Check size={14} /> Đã chọn: {existingCustomer.name} (
                     {existingCustomer.customer_type === 'hlv' ? 'HLV/Đại lý' : 'Khách lẻ'})
                   </p>
                 )}
@@ -597,7 +575,7 @@ export default function CreateOrder() {
                   <input
                     type="tel"
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => handlePhoneChange(e.target.value)}
                     placeholder="Nhập SĐT khách hàng"
                     className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
