@@ -2,25 +2,27 @@ import {
   Product,
   CATEGORY_MARKUP,
   TIERED_CATEGORIES,
-  TIERED_PRICING,
 } from './types';
 
 export type PriceType = 'hlv' | 'le';
 
 export function getUnitPrice(
-  product: Pick<Product, 'category' | 'price_hlv' | 'price_le'>,
+  product: Pick<Product, 'sku' | 'category' | 'price_hlv' | 'price_le'>,
   priceType: PriceType,
   quantity = 1
 ): number {
-  if (priceType === 'hlv') {
-    return product.price_hlv;
+  if (TIERED_CATEGORIES.includes(product.category)) {
+    const base = product.price_hlv;
+    if (product.sku?.startsWith('AT-PT-')) {
+      return base;
+    }
+    if (quantity > 50) return Math.max(0, base - 10000);
+    if (quantity >= 20) return Math.max(0, base - 5000);
+    return base;
   }
 
-  if (TIERED_CATEGORIES.includes(product.category)) {
-    const tier = TIERED_PRICING.tiers.find(
-      (t) => quantity >= t.minQty && quantity <= t.maxQty
-    );
-    return tier ? tier.price : product.price_le;
+  if (priceType === 'hlv') {
+    return product.price_hlv;
   }
 
   return product.price_le;
