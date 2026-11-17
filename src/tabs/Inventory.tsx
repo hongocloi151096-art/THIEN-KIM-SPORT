@@ -64,11 +64,14 @@ function parseCSVLine(line: string, delimiter: string): string[] {
 function getSkuGroupPrefix(sku: string): string {
   if (sku.startsWith('VP-')) {
     const parts = sku.split('-');
-    if (parts.length >= 3) return parts.slice(0, 3).join('-');
+    if (parts.length >= 4) return parts.slice(0, 3).join('-');
   }
   if (sku.startsWith('BK-')) {
     const parts = sku.split('-');
-    if (parts.length >= 2) return parts.slice(0, 2).join('-');
+    const lastPart = parts[parts.length - 1];
+    if (['TH', '6061', '7075', 'NHOM'].includes(lastPart) && parts.length >= 3) {
+      return parts.slice(0, -1).join('-');
+    }
   }
   return sku;
 }
@@ -164,15 +167,21 @@ export default function Inventory() {
 
     setUploadingImage(true);
     let matchedCount = 0;
-    let unmatchedFiles: string[] = [];
+    const unmatchedFiles: string[] = [];
 
     try {
       for (const file of files) {
-        const baseName = file.name.replace(/\.[^/.]+$/, '').trim().toUpperCase();
+        const rawName = file.name.replace(/\.[^/.]+$/, '').trim().toUpperCase();
+        // Bỏ qua các tệp ảnh phụ cùng ô (_2, _3...) để giữ ảnh đại diện chính
+        if (/_\d+$/.test(rawName)) {
+          continue;
+        }
+
+        const baseName = rawName;
         const matchedProducts = products.filter((p) => {
           const pSku = p.sku.toUpperCase();
           const groupPrefix = getSkuGroupPrefix(p.sku).toUpperCase();
-          return pSku === baseName || groupPrefix === baseName;
+          return pSku === baseName || pSku.startsWith(baseName + '-') || groupPrefix === baseName;
         });
 
         if (matchedProducts.length === 0) {
@@ -526,7 +535,7 @@ export default function Inventory() {
           </div>
         </div>
         <p className="text-xs text-slate-400 mt-2">
-          Mẹo tải ảnh hàng loạt: Đặt tên tệp ảnh trùng Mã SKU (VD: <span className="font-mono text-slate-600">BX21.jpg</span>) hoặc Mã nhóm (VD: <span className="font-mono text-slate-600">VP-VVN-POLY.jpg</span> để tự gắn cho cả 11 size, <span className="font-mono text-slate-600">BK-KIEM.jpg</span> cho cả 3 loại kiếm), chọn tất cả ảnh cùng lúc để tải lên.
+          Mẹo tải ảnh hàng loạt: Đặt tên tệp ảnh trùng Mã SKU (VD: <span className="font-mono text-slate-600">BX21.jpg</span>) hoặc Mã nhóm (VD: <span className="font-mono text-slate-600">VP-VOVINAM-POLYTE.jpg</span> để tự gắn cho cả 11 size, <span className="font-mono text-slate-600">BK-KIEM-QUYEN.jpg</span> cho cả 3 loại kiếm), chọn tất cả ảnh cùng lúc để tải lên.
         </p>
       </Card>
 
@@ -538,7 +547,7 @@ export default function Inventory() {
               label="Mã SKU *"
               value={newProduct.sku}
               onChange={(v) => setNewProduct({ ...newProduct, sku: v })}
-              placeholder="VD: VP-VVN-POLY-120"
+              placeholder="VD: VP-VOVINAM-POLYTE-120"
             />
             <Input
               label="Tên sản phẩm *"
