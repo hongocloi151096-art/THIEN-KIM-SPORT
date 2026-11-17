@@ -16,6 +16,7 @@ import {
   Shield,
   Users as UsersIcon,
   Send,
+  X,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import {
@@ -65,17 +66,29 @@ const CATEGORY_CARDS: CategoryCard[] = [
 
 const STAFF_LS_KEY = 'tk_selected_staff_id';
 
+const removeVietnameseAccents = (str: string): string =>
+  str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .trim();
+
 export default function CreateOrder() {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [staffList, setStaffList] = useState<SalesStaff[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [phone, setPhone] = useState('');
   const [customerName, setCustomerName] = useState('');
+  const [phone, setPhone] = useState('');
   const [customerAddress, setCustomerAddress] = useState('');
   const [existingCustomer, setExistingCustomer] = useState<Customer | null>(null);
+  const [showNameSuggestions, setShowNameSuggestions] = useState(false);
+
   const [priceType, setPriceType] = useState<PriceType>('le');
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -92,14 +105,16 @@ export default function CreateOrder() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [prodRes, supRes, setRes, staffRes] = await Promise.all([
+    const [prodRes, supRes, custRes, setRes, staffRes] = await Promise.all([
       supabase.from('products').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
+      supabase.from('customers').select('*').order('name'),
       supabase.from('settings').select('*').maybeSingle(),
       supabase.from('sales_staff').select('*').order('name'),
     ]);
     if (prodRes.data) setProducts(prodRes.data);
     if (supRes.data) setSuppliers(supRes.data);
+    if (custRes.data) setCustomers(custRes.data);
     if (setRes.data) setSettings(setRes.data);
     if (staffRes.data) setStaffList(staffRes.data);
     const savedStaff = localStorage.getItem(STAFF_LS_KEY);
@@ -115,27 +130,36 @@ export default function CreateOrder() {
     if (selectedStaffId) localStorage.setItem(STAFF_LS_KEY, selectedStaffId);
   }, [selectedStaffId]);
 
+  // Tự động nhận diện khách cũ khi nhập trực tiếp SĐT
   useEffect(() => {
-    if (phone.length < 8) {
-      setExistingCustomer(null);
+    const cleanPhone = phone.trim();
+    if (cleanPhone.length < 8) return;
+    if (existingCustomer && existingCustomer.phone === cleanPhone) return;
+
+    const matchedLocal = customers.find((c) => c.phone === cleanPhone);
+    if (matchedLocal) {
+      setExistingCustomer(matchedLocal);
+      if (!customerName.trim()) setCustomerName(matchedLocal.name);
+      if (!customerAddress.trim()) setCustomerAddress(matchedLocal.address || '');
+      setPriceType(matchedLocal.customer_type === 'hlv' ? 'hlv' : 'le');
       return;
     }
+
     const timer = setTimeout(async () => {
       const { data } = await supabase
         .from('customers')
         .select('*')
-        .eq('phone', phone)
+        .eq('phone', cleanPhone)
         .maybeSingle();
       if (data) {
         setExistingCustomer(data);
-        setCustomerName(data.name);
-        setCustomerAddress(data.address || '');
-      } else {
-        setExistingCustomer(null);
+        if (!customerName.trim()) setCustomerName(data.name);
+        if (!customerAddress.trim()) setCustomerAddress(data.address || '');
+        setPriceType(data.customer_type === 'hlv' ? 'hlv' : 'le');
       }
     }, 400);
     return () => clearTimeout(timer);
-  }, [phone]);
+  }, [phone, customers, existingCustomer, customerName, customerAddress]);
 
   useEffect(() => {
     setCart((prev) =>
@@ -145,6 +169,37 @@ export default function CreateOrder() {
       })
     );
   }, [priceType]);
+
+  // Lọc danh sách khách hàng gợi ý theo tên (có dấu / không dấu) hoặc SĐT
+  const suggestedCustomers = customers
+    .filter((c) => {
+      const rawQuery = customerName.trim();
+      if (!rawQuery) return false;
+      const normalizedQuery = removeVietnameseAccents(rawQuery);
+      const normalizedName = removeVietnameseAccents(c.name || '');
+      return (
+        normalizedName.includes(normalizedQuery) ||
+        (c.phone || '').includes(rawQuery)
+      );
+    })
+    .slice(0, 8);
+
+  const handleSelectCustomer = (cust: Customer) => {
+    setExistingCustomer(cust);
+    setCustomerName(cust.name);
+    setPhone(cust.phone);
+    setCustomerAddress(cust.address || '');
+    setPriceType(cust.customer_type === 'hlv' ? 'hlv' : 'le');
+    setShowNameSuggestions(false);
+  };
+
+  const handleClearCustomer = () => {
+    setExistingCustomer(null);
+    setCustomerName('');
+    setPhone('');
+    setCustomerAddress('');
+    setShowNameSuggestions(false);
+  };
 
   const filteredProducts = products.filter((p) => {
     if (selectedCategory && p.category !== selectedCategory) return false;
@@ -267,20 +322,37 @@ export default function CreateOrder() {
 
     try {
       let customerId = existingCustomer?.id || null;
+      const finalName = customerName.trim() || 'Khách lẻ';
+      const finalPhone = phone.trim();
+      const finalAddress = customerAddress.trim() || null;
 
       if (!customerId) {
         const { data: newCustomer, error: custErr } = await supabase
           .from('customers')
           .insert({
-            phone: phone.trim(),
-            name: customerName.trim() || 'Khách lẻ',
+            phone: finalPhone,
+            name: finalName,
             customer_type: priceType === 'hlv' ? 'hlv' : 'le',
-            address: customerAddress.trim() || null,
+            address: finalAddress,
           })
           .select()
           .single();
         if (custErr) throw custErr;
         customerId = newCustomer.id;
+        setCustomers((prev) => [...prev, newCustomer]);
+      } else if (
+        existingCustomer &&
+        (existingCustomer.address !== finalAddress || existingCustomer.name !== finalName)
+      ) {
+        await supabase
+          .from('customers')
+          .update({ name: finalName, address: finalAddress })
+          .eq('id', existingCustomer.id);
+        setCustomers((prev) =>
+          prev.map((c) =>
+            c.id === existingCustomer.id ? { ...c, name: finalName, address: finalAddress } : c
+          )
+        );
       }
 
       const orderCode = generateOrderCode();
@@ -292,9 +364,9 @@ export default function CreateOrder() {
         .insert({
           order_code: orderCode,
           customer_id: customerId,
-          customer_phone: phone.trim(),
-          customer_name: customerName.trim() || 'Khách lẻ',
-          customer_address: customerAddress.trim() || null,
+          customer_phone: finalPhone,
+          customer_name: finalName,
+          customer_address: finalAddress,
           price_type: priceType,
           total_amount: totalAmount,
           payment_status: 'pending',
@@ -347,8 +419,8 @@ export default function CreateOrder() {
         : '';
       const content = buildOrderMessage(
         orderCode,
-        customerName.trim() || 'Khách lẻ',
-        phone.trim(),
+        finalName,
+        finalPhone,
         cart,
         totalAmount,
         bankAccount,
@@ -359,7 +431,7 @@ export default function CreateOrder() {
       await supabase.from('message_outbox').insert({
         channel: 'zalo',
         sender_session_key: senderKey,
-        recipient: phone.trim(),
+        recipient: finalPhone,
         recipient_type: 'phone',
         content,
         status: 'pending',
@@ -420,16 +492,105 @@ export default function CreateOrder() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 space-y-6">
-          {/* Customer info */}
+          {/* Customer info - Ưu tiên nhập Tên khách hàng trước kèm gợi ý thông minh */}
           <Card className="p-5">
-            <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
-              <User size={18} className="text-blue-700" />
-              Thông tin khách hàng
-            </h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+                <User size={18} className="text-blue-700" />
+                Thông tin khách hàng
+              </h3>
+              {(customerName || phone || customerAddress) && (
+                <button
+                  type="button"
+                  onClick={handleClearCustomer}
+                  className="text-xs text-slate-500 hover:text-red-600 flex items-center gap-1 transition-colors"
+                >
+                  <X size={14} /> Xóa nhập lại
+                </button>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Ô 1: Tên khách hàng (Ưu tiên đầu tiên + Gợi ý danh sách khách hàng) */}
+              <div className="relative">
+                <label className="block text-sm font-medium text-slate-600 mb-1.5">
+                  Tên khách hàng *
+                </label>
+                <div className="relative">
+                  <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    autoFocus
+                    autoComplete="off"
+                    value={customerName}
+                    onFocus={() => setShowNameSuggestions(true)}
+                    onBlur={() => setTimeout(() => setShowNameSuggestions(false), 180)}
+                    onChange={(e) => {
+                      setCustomerName(e.target.value);
+                      setShowNameSuggestions(true);
+                      if (existingCustomer && e.target.value !== existingCustomer.name) {
+                        setExistingCustomer(null);
+                      }
+                    }}
+                    placeholder="Gõ tên khách hàng để tìm hoặc nhập mới..."
+                    className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {existingCustomer && (
+                  <p className="text-xs text-green-600 mt-1.5 flex items-center gap-1">
+                    <Check size={14} /> Đã chọn khách cũ: {existingCustomer.name} (
+                    {existingCustomer.customer_type === 'hlv' ? 'HLV/Đại lý' : 'Khách lẻ'})
+                  </p>
+                )}
+
+                {/* Danh sách gợi ý thông minh */}
+                {showNameSuggestions && suggestedCustomers.length > 0 && (
+                  <ul className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto divide-y divide-slate-100">
+                    {suggestedCustomers.map((cust) => (
+                      <li
+                        key={cust.id}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          handleSelectCustomer(cust);
+                        }}
+                        className="px-3.5 py-2.5 hover:bg-blue-50 cursor-pointer transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-semibold text-slate-800 truncate">
+                            {cust.name}
+                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span
+                              className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${
+                                cust.customer_type === 'hlv'
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : 'bg-slate-100 text-slate-600'
+                              }`}
+                            >
+                              {cust.customer_type === 'hlv' ? 'HLV' : 'Lẻ'}
+                            </span>
+                            <span className="text-xs font-mono text-blue-700 bg-blue-50 px-2 py-0.5 rounded">
+                              {cust.phone}
+                            </span>
+                          </div>
+                        </div>
+                        {cust.address && (
+                          <p className="text-xs text-slate-500 truncate mt-1 flex items-center gap-1">
+                            <MapPin size={12} className="shrink-0 text-slate-400" />
+                            {cust.address}
+                          </p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Ô 2: Số điện thoại */}
               <div>
                 <label className="block text-sm font-medium text-slate-600 mb-1.5">
-                  Số điện thoại *
+                  Số điện thoại (Zalo) *
                 </label>
                 <div className="relative">
                   <Phone size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -441,13 +602,9 @@ export default function CreateOrder() {
                     className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                {existingCustomer && (
-                  <p className="text-xs text-green-600 mt-1.5 flex items-center gap-1">
-                    <Check size={14} /> Khách cũ: {existingCustomer.name}
-                  </p>
-                )}
               </div>
-              <Input label="Tên khách hàng" value={customerName} onChange={setCustomerName} placeholder="Tên khách" />
+
+              {/* Ô 3: Địa chỉ giao hàng */}
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-slate-600 mb-1.5">Địa chỉ giao hàng</label>
                 <div className="relative">
@@ -487,6 +644,7 @@ export default function CreateOrder() {
                 <label className="block text-sm font-medium text-slate-600 mb-2">Bảng giá áp dụng</label>
                 <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
                   <button
+                    type="button"
                     onClick={() => setPriceType('hlv')}
                     className={`px-4 py-2.5 text-sm font-medium transition-all ${
                       priceType === 'hlv'
@@ -497,6 +655,7 @@ export default function CreateOrder() {
                     Giá HLV/Đại lý
                   </button>
                   <button
+                    type="button"
                     onClick={() => setPriceType('le')}
                     className={`px-4 py-2.5 text-sm font-medium transition-all border-l border-slate-300 ${
                       priceType === 'le'
@@ -525,6 +684,7 @@ export default function CreateOrder() {
                 const active = selectedCategory === cat.key;
                 return (
                   <button
+                    type="button"
                     key={cat.key}
                     onClick={() => handleCategoryClick(cat.key)}
                     className={`relative rounded-xl p-4 text-left transition-all border-2 ${
@@ -558,6 +718,7 @@ export default function CreateOrder() {
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
+                    type="button"
                     onClick={() => setSelectedSub('')}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                       !selectedSub
@@ -569,6 +730,7 @@ export default function CreateOrder() {
                   </button>
                   {SUB_CATEGORIES[selectedCategory].map((sub) => (
                     <button
+                      type="button"
                       key={sub}
                       onClick={() => setSelectedSub(sub)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
@@ -669,6 +831,7 @@ export default function CreateOrder() {
                         <p className="text-xs text-slate-400">{item.product.variant} | {item.product.sku}</p>
                       </div>
                       <button
+                        type="button"
                         onClick={() => removeFromCart(item.product.id)}
                         className="text-slate-400 hover:text-red-600 transition-colors shrink-0"
                       >
@@ -677,6 +840,7 @@ export default function CreateOrder() {
                     </div>
                     <div className="flex items-center gap-2 mt-2">
                       <button
+                        type="button"
                         onClick={() => updateQuantity(item.product.id, item.quantity - 1)}
                         className="w-7 h-7 rounded border border-slate-300 flex items-center justify-center text-slate-600 hover:bg-slate-100 transition-colors"
                       >
@@ -684,6 +848,7 @@ export default function CreateOrder() {
                       </button>
                       <span className="w-10 text-center text-sm font-medium">{item.quantity}</span>
                       <button
+                        type="button"
                         onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
                         className="w-7 h-7 rounded border border-slate-300 flex items-center justify-center text-slate-600 hover:bg-slate-100 transition-colors"
                       >
