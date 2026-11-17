@@ -16,6 +16,7 @@ import {
   Shield,
   Users as UsersIcon,
   Send,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import {
@@ -49,6 +50,15 @@ interface CartItem {
   supplierId: string | null;
 }
 
+interface ProductGroup {
+  groupKey: string;
+  name: string;
+  category: string;
+  sub_category: string | null;
+  image_url: string | null;
+  items: Product[];
+}
+
 interface CategoryCard {
   key: string;
   label: string;
@@ -74,6 +84,17 @@ const removeVietnameseAccents = (str: string): string =>
     .toLowerCase()
     .trim();
 
+function getShortVariantLabel(product: Product): string {
+  if (product.sku.startsWith('VP-')) {
+    const size = product.sku.split('-').pop() || '';
+    return `Size ${size}`;
+  }
+  if (product.variant) {
+    return product.variant.replace(/\s*\([^)]*\)/g, '').trim();
+  }
+  return product.sku;
+}
+
 export default function CreateOrder() {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -98,6 +119,7 @@ export default function CreateOrder() {
   const [selectedStaffId, setSelectedStaffId] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [selectedSub, setSelectedSub] = useState<string>('');
+  const [selectedVariantByGroup, setSelectedVariantByGroup] = useState<Record<string, string>>({});
 
   const customerAddressRef = useRef(customerAddress);
   customerAddressRef.current = customerAddress;
@@ -105,7 +127,7 @@ export default function CreateOrder() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     const [prodRes, supRes, custRes, setRes, staffRes] = await Promise.all([
-      supabase.from('products').select('*').order('name'),
+      supabase.from('products').select('*').order('sku'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('customers').select('*').order('name'),
       supabase.from('settings').select('*').maybeSingle(),
@@ -138,7 +160,6 @@ export default function CreateOrder() {
     );
   }, [priceType]);
 
-  // Chỉ tự động tìm khách khi người dùng trực tiếp gõ thay đổi ở ô SĐT
   const handlePhoneChange = (newPhone: string) => {
     setPhone(newPhone);
     const cleanPhone = newPhone.trim();
@@ -153,7 +174,6 @@ export default function CreateOrder() {
     }
   };
 
-  // Lọc danh sách khách hàng gợi ý theo tên (có dấu / không dấu) hoặc SĐT
   const suggestedCustomers = customers
     .filter((c) => {
       const rawQuery = customerName.trim();
@@ -179,14 +199,40 @@ export default function CreateOrder() {
   const filteredProducts = products.filter((p) => {
     if (selectedCategory && p.category !== selectedCategory) return false;
     if (selectedSub && (p.sub_category || '') !== selectedSub) return false;
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
+    if (!searchQuery.trim()) return true;
+    const q = removeVietnameseAccents(searchQuery);
     return (
-      p.sku.toLowerCase().includes(q) ||
-      p.name.toLowerCase().includes(q) ||
-      (p.variant || '').toLowerCase().includes(q)
+      removeVietnameseAccents(p.sku).includes(q) ||
+      removeVietnameseAccents(p.name).includes(q) ||
+      removeVietnameseAccents(p.variant || '').includes(q)
     );
   });
+
+  // Gom nhóm thông minh các sản phẩm có nhiều size hoặc nhiều chất liệu nhôm
+  const groupedProducts: ProductGroup[] = [];
+  const groupMap = new Map<string, ProductGroup>();
+
+  for (const p of filteredProducts) {
+    const isMultiVariant = p.sku.startsWith('VP-') || p.sku.startsWith('BK-');
+    const groupKey = isMultiVariant ? `${p.category}__${p.name}` : p.id;
+    let grp = groupMap.get(groupKey);
+    if (!grp) {
+      grp = {
+        groupKey,
+        name: p.name,
+        category: p.category,
+        sub_category: p.sub_category,
+        image_url: p.image_url || null,
+        items: [],
+      };
+      groupMap.set(groupKey, grp);
+      groupedProducts.push(grp);
+    }
+    if (!grp.image_url && p.image_url) {
+      grp.image_url = p.image_url;
+    }
+    grp.items.push(p);
+  }
 
   const totalAmount = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
 
@@ -476,7 +522,7 @@ export default function CreateOrder() {
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 space-y-6">
-          {/* Customer info - Ưu tiên nhập Tên khách hàng trước kèm gợi ý thông minh */}
+          {/* Thông tin khách hàng */}
           <Card className="p-5">
             <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
               <User size={18} className="text-blue-700" />
@@ -484,7 +530,7 @@ export default function CreateOrder() {
             </h3>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Ô 1: Tên khách hàng (Ưu tiên đầu tiên + Gợi ý danh sách khách hàng) */}
+              {/* Ô 1: Tên khách hàng */}
               <div className="relative">
                 <label className="block text-sm font-medium text-slate-600 mb-1.5">
                   Tên khách hàng *
@@ -522,7 +568,6 @@ export default function CreateOrder() {
                   </p>
                 )}
 
-                {/* Danh sách gợi ý thông minh */}
                 {showNameSuggestions && suggestedCustomers.length > 0 && (
                   <ul className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto divide-y divide-slate-100">
                     {suggestedCustomers.map((cust) => (
@@ -648,14 +693,13 @@ export default function CreateOrder() {
             </div>
           </Card>
 
-          {/* Two-tier product selection */}
+          {/* Chọn sản phẩm theo nhóm + ảnh gốc + chọn nhanh size/chất liệu */}
           <Card className="p-5">
             <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
               <Package size={18} className="text-blue-700" />
               Chọn sản phẩm theo nhóm
             </h3>
 
-            {/* Tier 1 - Category cards */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
               {CATEGORY_CARDS.map((cat) => {
                 const Icon = cat.icon;
@@ -671,12 +715,14 @@ export default function CreateOrder() {
                         : 'border-slate-200 hover:border-blue-300 hover:shadow-sm'
                     }`}
                   >
-                    <div className={`inline-flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br ${cat.accent} text-white mb-2`}>
+                    <div
+                      className={`inline-flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br ${cat.accent} text-white mb-2`}
+                    >
                       <Icon size={18} />
                     </div>
                     <p className="text-sm font-semibold text-slate-800 leading-tight">{cat.label}</p>
                     <p className="text-xs text-slate-400 mt-1">
-                      {products.filter((p) => p.category === cat.key).length} sản phẩm
+                      {products.filter((p) => p.category === cat.key).length} mã hàng
                     </p>
                     {active && (
                       <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-700 text-white flex items-center justify-center">
@@ -688,11 +734,10 @@ export default function CreateOrder() {
               })}
             </div>
 
-            {/* Tier 2 - sub_category filter */}
             {selectedCategory && (
               <div className="mb-4 p-3 bg-slate-50 rounded-lg border border-slate-200">
                 <p className="text-xs font-medium text-slate-500 uppercase mb-2">
-                  {SUB_CATEGORIES[selectedCategory].length > 4 ? 'Chọn môn võ / nhóm con' : 'Chọn nhóm con'}
+                  {SUB_CATEGORIES[selectedCategory]?.length > 4 ? 'Chọn môn võ / nhóm con' : 'Chọn nhóm con'}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -706,7 +751,7 @@ export default function CreateOrder() {
                   >
                     Tất cả
                   </button>
-                  {SUB_CATEGORIES[selectedCategory].map((sub) => (
+                  {(SUB_CATEGORIES[selectedCategory] || []).map((sub) => (
                     <button
                       type="button"
                       key={sub}
@@ -724,72 +769,136 @@ export default function CreateOrder() {
               </div>
             )}
 
-            {/* Search */}
             <div className="relative mb-4">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Tìm theo mã SKU hoặc tên sản phẩm..."
+                placeholder="Tìm nhanh theo mã (VD: BX21, VP-VVN) hoặc tên sản phẩm (hỗ trợ không dấu)..."
                 className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
-            <div className="max-h-72 overflow-y-auto space-y-2">
-              {filteredProducts.map((product) => (
-                <div
-                  key={product.id}
-                  className="flex items-center justify-between p-3 rounded-lg border border-slate-200 hover:border-blue-300 hover:bg-blue-50/50 transition-all"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-mono font-medium text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded">
-                        {product.sku}
-                      </span>
-                      {product.sub_category && (
-                        <span className="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
-                          {product.sub_category}
-                        </span>
-                      )}
-                      {product.variant && (
-                        <span className="text-xs text-slate-500">{product.variant}</span>
+            <div className="max-h-[520px] overflow-y-auto space-y-2.5 pr-1">
+              {groupedProducts.map((grp) => {
+                const selectedItemId = selectedVariantByGroup[grp.groupKey] || grp.items[0].id;
+                const activeProduct = grp.items.find((i) => i.id === selectedItemId) || grp.items[0];
+                const displayPrice = getUnitPrice(activeProduct, priceType, 1);
+
+                return (
+                  <div
+                    key={grp.groupKey}
+                    className="flex items-start justify-between gap-3 p-3 rounded-xl border border-slate-200 hover:border-blue-300 hover:bg-blue-50/40 transition-all bg-white"
+                  >
+                    {/* Ảnh gốc sản phẩm */}
+                    <div className="w-16 h-16 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden shrink-0 flex items-center justify-center">
+                      {grp.image_url ? (
+                        <img
+                          src={grp.image_url}
+                          alt={grp.name}
+                          className="w-full h-full object-contain"
+                        />
+                      ) : (
+                        <ImageIcon size={22} className="text-slate-300" />
                       )}
                     </div>
-                    <p className="text-sm font-medium text-slate-700 mt-1 truncate">{product.name}</p>
-                    <div className="flex items-center gap-3 mt-1">
-                      <span className="text-xs text-slate-500">
-                        HLV: <span className="font-medium text-slate-700">{formatVND(product.price_hlv)}</span>
+
+                    {/* Thông tin & Nút chọn nhanh Size / Phân loại */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-mono font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded">
+                          {activeProduct.sku}
+                        </span>
+                        {grp.sub_category && (
+                          <span className="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                            {grp.sub_category}
+                          </span>
+                        )}
+                      </div>
+
+                      <p className="text-sm font-semibold text-slate-800 mt-1">{grp.name}</p>
+
+                      {grp.items.length > 1 ? (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {grp.items.map((variantItem) => {
+                            const isSelected = variantItem.id === activeProduct.id;
+                            return (
+                              <button
+                                key={variantItem.id}
+                                type="button"
+                                onClick={() =>
+                                  setSelectedVariantByGroup((prev) => ({
+                                    ...prev,
+                                    [grp.groupKey]: variantItem.id,
+                                  }))
+                                }
+                                className={`px-2 py-1 rounded text-xs font-medium border transition-all ${
+                                  isSelected
+                                    ? 'bg-blue-700 text-white border-blue-700 shadow-xs'
+                                    : 'bg-white text-slate-600 border-slate-300 hover:border-blue-400'
+                                }`}
+                              >
+                                {getShortVariantLabel(variantItem)}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        activeProduct.variant && (
+                          <p className="text-xs text-slate-500 mt-0.5">{activeProduct.variant}</p>
+                        )
+                      )}
+
+                      <div className="flex items-center gap-3 mt-2 flex-wrap">
+                        <span className="text-xs text-slate-500">
+                          HLV: <span className="font-semibold text-slate-700">{formatVND(activeProduct.price_hlv)}</span>
+                        </span>
+                        <span className="text-xs text-slate-500">
+                          Lẻ: <span className="font-semibold text-red-600">{formatVND(activeProduct.price_le)}</span>
+                        </span>
+                        <span
+                          className={`text-xs font-medium ${
+                            activeProduct.stock < 5 ? 'text-red-600' : 'text-slate-500'
+                          }`}
+                        >
+                          Tồn: {activeProduct.stock}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Giá áp dụng & Nút Thêm */}
+                    <div className="flex flex-col items-end justify-between shrink-0 gap-2">
+                      <span
+                        className={`text-sm font-bold ${
+                          priceType === 'hlv' ? 'text-blue-700' : 'text-red-600'
+                        }`}
+                      >
+                        {formatVND(displayPrice)}
                       </span>
-                      <span className="text-xs text-slate-500">
-                        Lẻ: <span className="font-medium text-red-600">{formatVND(product.price_le)}</span>
-                      </span>
-                      <span className={`text-xs font-medium ${product.stock < 5 ? 'text-red-600' : 'text-slate-500'}`}>
-                        Tồn: {product.stock}
-                      </span>
+                      <Button
+                        size="sm"
+                        variant={priceType === 'hlv' ? 'primary' : 'danger'}
+                        onClick={() => addToCart(activeProduct)}
+                        disabled={activeProduct.stock <= 0}
+                      >
+                        <Plus size={14} className="inline" /> Thêm
+                      </Button>
                     </div>
                   </div>
-                  <Button
-                    size="sm"
-                    variant={priceType === 'hlv' ? 'primary' : 'danger'}
-                    onClick={() => addToCart(product)}
-                    disabled={product.stock <= 0}
-                    className="ml-3 shrink-0"
-                  >
-                    <Plus size={14} className="inline" /> Thêm
-                  </Button>
-                </div>
-              ))}
-              {filteredProducts.length === 0 && (
-                <p className="text-center text-sm text-slate-400 py-6">
-                  {selectedCategory ? 'Không có sản phẩm trong nhóm này' : 'Không tìm thấy sản phẩm'}
+                );
+              })}
+
+              {groupedProducts.length === 0 && (
+                <p className="text-center text-sm text-slate-400 py-8">
+                  {selectedCategory ? 'Không có sản phẩm trong nhóm này' : 'Không tìm thấy sản phẩm phù hợp'}
                 </p>
               )}
             </div>
           </Card>
         </div>
 
-        {/* Right: Cart + QR */}
+        {/* Right: Giỏ hàng + QR */}
         <div className="space-y-6">
           <Card className="p-5 sticky top-4">
             <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
@@ -800,13 +909,22 @@ export default function CreateOrder() {
             {cart.length === 0 ? (
               <p className="text-sm text-slate-400 text-center py-8">Chưa có sản phẩm nào trong giỏ</p>
             ) : (
-              <div className="space-y-3 max-h-64 overflow-y-auto">
+              <div className="space-y-3 max-h-72 overflow-y-auto">
                 {cart.map((item) => (
                   <div key={item.product.id} className="border border-slate-200 rounded-lg p-3">
-                    <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2.5">
+                      {item.product.image_url && (
+                        <img
+                          src={item.product.image_url}
+                          alt={item.product.name}
+                          className="w-10 h-10 rounded object-contain border border-slate-200 shrink-0"
+                        />
+                      )}
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium text-slate-700 truncate">{item.product.name}</p>
-                        <p className="text-xs text-slate-400">{item.product.variant} | {item.product.sku}</p>
+                        <p className="text-xs text-slate-400">
+                          {item.product.variant} | {item.product.sku}
+                        </p>
                       </div>
                       <button
                         type="button"
@@ -872,10 +990,10 @@ export default function CreateOrder() {
                 </div>
 
                 <Input
-                  label="Ghi chú đơn hàng"
+                  label="Ghi chú đơn hàng (Màu sắc / Nội dung thêu...)"
                   value={orderNote}
                   onChange={setOrderNote}
-                  placeholder="Ghi chú (nếu có)"
+                  placeholder="VD: Găng xanh size 10, thêu tên..."
                   className="mt-4"
                 />
 
